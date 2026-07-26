@@ -1,0 +1,8 @@
+* @Mavengence
+
+/.github/ @Mavengence
+/Dockerfile @Mavengence
+/Dockerfile.caddy @Mavengence
+/docker-compose.yml @Mavengence
+/requirements*.lock @Mavengence
+/supabase/migrations/ @Mavengence

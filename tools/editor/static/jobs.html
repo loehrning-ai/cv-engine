@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>CV Copilot · Jobs catalog</title>
+  <link rel="icon" href="/static/og-image.svg" type="image/svg+xml">
+  <!-- No-flash theme restore — render-blocking, before the stylesheets. -->
+  <script src="/static/theme-init.js"></script>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/cover-letters.css">
+  <link rel="stylesheet" href="/static/jobs.css">
+</head>
+<body>
+  <div id="jb-app" class="cl-app">
+__CHROME_TOPBAR__
+
+    <main class="cl-main jb-main">
+      <section class="tool-page-head" aria-labelledby="jobs-page-heading">
+        <div>
+          <h1 id="jobs-page-heading" class="tool-page-title" data-i18n="jobs.title">Jobs catalog</h1>
+          <p class="tool-page-sub muted" data-i18n="jobs.page.sub">
+            Track saved roles, linked tailored CVs, and grounded cover letters in one workspace.
+          </p>
+        </div>
+        <div class="tool-page-status" aria-label="Page status" data-i18n-attr="aria-label:jobs.page_status_aria">
+          <span class="tool-badge tool-badge-filter" data-i18n="jobs.status.open">Open</span>
+          <span class="tool-badge tool-badge-doc" data-i18n="jobs.linked.letters">Cover letters</span>
+        </div>
+      </section>
+
+      <!-- Left: the catalog grid (chips + search + add-job + cards) -->
+      <section class="cl-pane jb-catalog-pane jb-search-sidebar" aria-label="Jobs search and catalog filters" data-i18n-attr="aria-label:jobs.catalog_aria">
+        <!-- Add a job (collapsible so the grid stays primary) -->
+        <details id="jb-add-details" class="jb-add-details" open>
+          <summary class="jb-add-summary">
+            <span data-icon="plus-circle" data-icon-size="15"></span>
+            <span data-i18n="jobs.add.summary">Save a job</span>
+          </summary>
+          <div class="jb-add-body">
+            <p class="cl-sub muted">
+              Paste a job description, or give a non-LinkedIn public link. LinkedIn
+              entries require pasted text unless an approved adapter is configured.
+              Internal addresses are blocked.
+            </p>
+
+            <label class="cl-label" for="jb-url" data-i18n="jobs.field.url">Job URL (optional)</label>
+            <input id="jb-url" class="cl-input" type="url" inputmode="url"
+                   placeholder="https://… (or just paste the text below)" />
+
+            <label class="cl-label" for="jb-jd" data-i18n="jobs.field.jd">Job description</label>
+            <textarea id="jb-jd" class="cl-textarea" rows="5"
+                      placeholder="Paste the full job posting here…"></textarea>
+
+            <div class="jb-primary-actions">
+              <button id="jb-add" type="button" class="cl-btn cl-btn-primary">
+                <span data-icon="plus" data-icon-size="14"></span>
+                <span class="jb-add-label" data-i18n="jobs.add.button">Save job</span>
+              </button>
+            </div>
+
+            <div class="jb-field-row">
+              <div class="jb-field">
+                <label class="cl-label" for="jb-title" data-i18n="jobs.field.title">Title (optional)</label>
+                <input id="jb-title" class="cl-input" type="text" placeholder="e.g. Senior Data Engineer" />
+              </div>
+              <div class="jb-field">
+                <label class="cl-label" for="jb-company" data-i18n="jobs.field.company">Company (optional)</label>
+                <input id="jb-company" class="cl-input" type="text" placeholder="e.g. Acme GmbH" />
+              </div>
+            </div>
+
+            <div class="jb-field-row">
+              <div class="jb-field">
+                <label class="cl-label" for="jb-field" data-i18n="jobs.field.field">Field (optional)</label>
+                <input id="jb-field" class="cl-input" type="text" placeholder="e.g. Data / ML" />
+              </div>
+              <div class="jb-field">
+                <label class="cl-label" for="jb-deadline" data-i18n="jobs.field.deadline">Deadline (optional)</label>
+                <input id="jb-deadline" class="cl-input" type="date" name="deadline" autocomplete="off" aria-label="Deadline (optional)" data-i18n-attr="aria-label:jobs.field.deadline" />
+                <span class="jb-hint muted" data-i18n="jobs.field.deadline_hint">advisory — verify on the posting</span>
+              </div>
+            </div>
+
+            <div class="jb-field-row">
+              <div class="jb-field">
+                <label class="cl-label" for="jb-confidence" data-i18n="jobs.field.confidence">Fit confidence (optional)</label>
+                <input id="jb-confidence" class="cl-input" type="number" min="0" max="100" step="1"
+                       inputmode="numeric" placeholder="0–100 %" />
+              </div>
+              <div class="jb-field">
+                <label class="cl-label" for="jb-whyfit" data-i18n="jobs.field.whyfit">Your note (optional)</label>
+                <input id="jb-whyfit" class="cl-input" type="text" maxlength="2000"
+                       placeholder="Why this role fits you" />
+              </div>
+            </div>
+
+            <div id="jb-feedback" class="cl-feedback" role="status" aria-live="polite" hidden></div>
+          </div>
+        </details>
+
+        <details id="jb-import-details" class="jb-add-details">
+          <summary class="jb-add-summary">
+            <span data-icon="scan-search" data-icon-size="15"></span>
+            <span data-i18n="jobs.import.summary">Import preview</span>
+          </summary>
+          <div class="jb-add-body">
+            <p class="cl-sub muted" data-i18n="jobs.import.intro">
+              Preview user-provided postings before saving. LinkedIn stays manual: paste the posting text; no blind fetch or stored cookies.
+            </p>
+            <div class="jb-field-row">
+              <div class="jb-field">
+	                <label class="cl-label" for="jb-import-source" data-i18n="jobs.import.source.label">Source</label>
+	                <select id="jb-import-source" class="cl-select">
+	                  <option value="" data-i18n="jobs.import.source.default">Profile default</option>
+	                  <option value="manual" data-i18n="jobs.import.source.manual">Manual paste/export</option>
+                  <option value="linkedin" data-i18n="jobs.import.source.linkedin">LinkedIn pasted text</option>
+                  <option value="all" data-i18n="jobs.import.source.all">All local sources</option>
+                </select>
+              </div>
+              <div class="jb-field">
+                <label class="cl-label" for="jb-import-title" data-i18n="jobs.import.title_filter">Title filter</label>
+                <input id="jb-import-title" class="cl-input" type="text" placeholder="Data Engineer" />
+              </div>
+            </div>
+            <div class="jb-field-row">
+              <div class="jb-field">
+                <label class="cl-label" for="jb-import-country" data-i18n="jobs.import.country">Country</label>
+                <input id="jb-import-country" class="cl-input" type="text" placeholder="DE" />
+              </div>
+              <div class="jb-field">
+                <label class="cl-label" for="jb-import-region" data-i18n="jobs.import.region">Region</label>
+                <input id="jb-import-region" class="cl-input" type="text" placeholder="Berlin" />
+              </div>
+            </div>
+            <div class="jb-field-row">
+              <div class="jb-field">
+                <label class="cl-label" for="jb-import-remote" data-i18n="jobs.import.remote_mode">Remote mode</label>
+                <select id="jb-import-remote" class="cl-select">
+                  <option value="" data-i18n="account.job_sources.remote.any">Any</option>
+                  <option value="onsite" data-i18n="account.job_sources.remote.onsite">Onsite</option>
+                  <option value="hybrid" data-i18n="account.job_sources.remote.hybrid">Hybrid</option>
+                  <option value="remote" data-i18n="account.job_sources.remote.remote">Remote</option>
+                </select>
+              </div>
+              <div class="jb-field">
+                <label class="cl-label" for="jb-import-seniority" data-i18n="jobs.import.seniority">Seniority</label>
+                <input id="jb-import-seniority" class="cl-input" type="text" placeholder="Senior" />
+              </div>
+              <div class="jb-field">
+                <label class="cl-label" for="jb-import-freshness" data-i18n="jobs.filter.freshness">Freshness</label>
+                <select id="jb-import-freshness" class="cl-select">
+                  <option value="" data-i18n="account.job_sources.freshness.any">Any</option>
+                  <option value="fresh" data-i18n="account.job_sources.freshness.fresh_only">Fresh only</option>
+                  <option value="stale" data-i18n="account.job_sources.freshness.stale_only">Stale only</option>
+                </select>
+              </div>
+            </div>
+            <label class="cl-label" for="jb-import-jd" data-i18n="jobs.import.posting_text">Posting text</label>
+            <textarea id="jb-import-jd" class="cl-textarea" rows="4" placeholder="Paste one posting for preview review…"></textarea>
+            <div class="jb-primary-actions">
+              <button id="jb-import-preview" type="button" class="cl-btn cl-btn-primary">
+                <span data-icon="scan-search" data-icon-size="14"></span>
+                <span data-i18n="jobs.import.preview">Preview import</span>
+              </button>
+              <button id="jb-local-search" type="button" class="cl-btn">
+                <span data-icon="database" data-icon-size="14"></span>
+                <span data-i18n="jobs.import.local_search">Search local DB</span>
+              </button>
+              <button id="jb-import-save-selected" type="button" class="cl-btn" disabled>
+                <span data-icon="check" data-icon-size="14"></span>
+                <span data-i18n="jobs.import.save_selected">Save selected</span>
+              </button>
+              <button id="jb-import-mark-stale" type="button" class="cl-btn" disabled>
+                <span data-icon="scan-search" data-icon-size="14"></span>
+                <span data-i18n="jobs.import.mark_stale">Mark stale</span>
+              </button>
+            </div>
+            <div id="jb-import-feedback" class="cl-feedback" role="status" aria-live="polite" hidden></div>
+            <div id="jb-import-preview-list" class="jb-import-preview-list" aria-live="polite"></div>
+          </div>
+        </details>
+
+        <!-- Filter chips + search + sort -->
+        <div class="jb-controls">
+          <div class="jb-chips" role="group" aria-label="Filter jobs" data-i18n-attr="aria-label:jobs.filter.group_aria">
+            <button type="button" class="jb-chip is-active" data-filter="all" aria-pressed="true" data-i18n="jobs.filter.all">All</button>
+            <button type="button" class="jb-chip" data-filter="has_cover" aria-pressed="false" data-i18n="jobs.filter.has_cover">Has cover</button>
+            <button type="button" class="jb-chip" data-filter="open" aria-pressed="false" data-i18n="jobs.status.open">Open</button>
+            <button type="button" class="jb-chip" data-filter="speculative" aria-pressed="false" data-i18n="jobs.status.speculative">Speculative</button>
+            <button type="button" class="jb-chip" data-filter="applied" aria-pressed="false" data-i18n="jobs.status.applied">Applied</button>
+          </div>
+          <div class="jb-controls-right">
+            <input id="jb-search" class="cl-input jb-search" type="search"
+                   placeholder="Search title, company, field…" aria-label="Search jobs" data-i18n-attr="placeholder:jobs.search,aria-label:jobs.search_aria" />
+            <label class="jb-sort-label muted" for="jb-sort" data-i18n="jobs.sort.label">Sort</label>
+            <select id="jb-sort" class="cl-select jb-sort" aria-label="Sort jobs" data-i18n-attr="aria-label:jobs.sort.aria">
+              <option value="smart" data-i18n="jobs.sort.smart">Smart (cover · deadline)</option>
+              <option value="deadline" data-i18n="jobs.sort.deadline">Deadline soonest</option>
+              <option value="confidence" data-i18n="jobs.sort.confidence">Confidence high</option>
+              <option value="shortlist_rank" data-i18n="jobs.sort.shortlist_rank">Shortlist rank</option>
+              <option value="created" data-i18n="jobs.sort.created">Newest added</option>
+            </select>
+          </div>
+        </div>
+        <div class="jb-saved-filters" aria-label="Saved-job filters" data-i18n-attr="aria-label:jobs.saved_filters_aria">
+          <div class="jb-filter-field">
+            <label class="cl-label" for="jb-search-mode" data-i18n="jobs.filter.search_mode">Search mode</label>
+            <select id="jb-search-mode" class="cl-select jb-filter-control">
+              <option value="flexible" data-i18n="jobs.filter.mode.flexible">Flexible</option>
+              <option value="strict" data-i18n="jobs.filter.mode.strict">Strict title</option>
+            </select>
+          </div>
+          <div class="jb-filter-field jb-filter-field-wide">
+            <label class="cl-label" for="jb-filter-family" data-i18n="jobs.filter.family">Job family</label>
+            <input id="jb-filter-family" class="cl-input jb-filter-control" type="text" placeholder="Data / ML" />
+          </div>
+          <div class="jb-filter-field jb-filter-field-wide">
+            <label class="cl-label" for="jb-filter-city" data-i18n="jobs.filter.city">City</label>
+            <input id="jb-filter-city" class="cl-input jb-filter-control" type="text" placeholder="Berlin" />
+          </div>
+          <div class="jb-filter-field">
+            <label class="cl-label" for="jb-filter-min-years" data-i18n="jobs.filter.min_years">Years fit</label>
+            <input id="jb-filter-min-years" class="cl-input jb-filter-control" type="number" min="0" max="40" step="0.5" inputmode="decimal" placeholder="5" />
+          </div>
+          <div class="jb-filter-field">
+            <label class="cl-label" for="jb-filter-rank-bucket" data-i18n="jobs.filter.rank_bucket">Rank bucket</label>
+            <select id="jb-filter-rank-bucket" class="cl-select jb-filter-control">
+              <option value="" data-i18n="jobs.filter.any_rank">Any rank</option>
+	              <option value="Apply first" data-i18n="jobs.filter.rank.apply_first">Apply first</option>
+	              <option value="Strong volume" data-i18n="jobs.filter.rank.strong_volume">Strong volume</option>
+	              <option value="Frontier stretch" data-i18n="jobs.filter.rank.frontier_stretch">Frontier stretch</option>
+	              <option value="Berlin backups" data-i18n="jobs.filter.rank.berlin_backups">Berlin backups</option>
+            </select>
+          </div>
+          <div class="jb-filter-field jb-filter-field-wide">
+            <label class="cl-label" for="jb-filter-country" data-i18n="jobs.filter.country">Country</label>
+            <input id="jb-filter-country" class="cl-input jb-filter-control" type="text" placeholder="DE" />
+          </div>
+          <div class="jb-filter-field jb-filter-field-wide">
+            <label class="cl-label" for="jb-filter-region" data-i18n="jobs.filter.region">Region</label>
+            <input id="jb-filter-region" class="cl-input jb-filter-control" type="text" placeholder="Berlin" />
+          </div>
+          <div class="jb-filter-field">
+            <label class="cl-label" for="jb-filter-provider" data-i18n="jobs.filter.provider">Source</label>
+            <select id="jb-filter-provider" class="cl-select jb-filter-control">
+              <option value="" selected data-i18n="jobs.filter.any_source">Any source</option>
+              <option value="manual" data-i18n="jobs.filter.source.manual">Manual</option>
+              <option value="linkedin" data-i18n="jobs.filter.source.linkedin">LinkedIn</option>
+              <option value="other" data-i18n="jobs.filter.source.other">Other</option>
+            </select>
+          </div>
+          <div class="jb-filter-field">
+            <label class="cl-label" for="jb-filter-verification" data-i18n="jobs.filter.verification">Verification</label>
+            <select id="jb-filter-verification" class="cl-select jb-filter-control">
+              <option value="" data-i18n="jobs.filter.any_verification">Any</option>
+              <option value="user_provided" data-i18n="jobs.verification.user_provided">User provided</option>
+              <option value="needs_review" data-i18n="jobs.verification.needs_review">Needs review</option>
+              <option value="stale" data-i18n="jobs.verification.stale">Stale</option>
+            </select>
+          </div>
+          <div class="jb-filter-field">
+            <label class="cl-label" for="jb-filter-remote" data-i18n="jobs.filter.remote">Remote</label>
+            <select id="jb-filter-remote" class="cl-select jb-filter-control">
+              <option value="" data-i18n="account.job_sources.remote.any">Any</option>
+              <option value="onsite" data-i18n="account.job_sources.remote.onsite">Onsite</option>
+              <option value="hybrid" data-i18n="account.job_sources.remote.hybrid">Hybrid</option>
+              <option value="remote" data-i18n="account.job_sources.remote.remote">Remote</option>
+            </select>
+          </div>
+          <div class="jb-filter-field jb-filter-field-wide">
+            <label class="cl-label" for="jb-filter-seniority" data-i18n="jobs.filter.seniority">Seniority</label>
+            <input id="jb-filter-seniority" class="cl-input jb-filter-control" type="text" placeholder="Senior" />
+          </div>
+          <div class="jb-filter-field">
+            <label class="cl-label" for="jb-filter-freshness" data-i18n="jobs.filter.freshness">Freshness</label>
+            <select id="jb-filter-freshness" class="cl-select jb-filter-control">
+              <option value="" data-i18n="account.job_sources.freshness.any">Any</option>
+              <option value="fresh" data-i18n="account.job_sources.freshness.fresh_only">Fresh only</option>
+              <option value="stale" data-i18n="account.job_sources.freshness.stale_only">Stale only</option>
+            </select>
+          </div>
+        </div>
+
+        <div id="jb-grid" class="jb-grid" aria-live="polite"></div>
+      </section>
+
+      <!-- Right: selected job detail (source-CV picker + linked docs) -->
+      <section class="cl-pane cl-result-pane jb-detail-pane jb-results-panel" aria-label="Job detail" data-i18n-attr="aria-label:jobs.detail_aria">
+        <div id="jb-detail-empty" class="tl-empty">
+          <span data-icon="briefcase" data-icon-size="30" class="muted"></span>
+          <p class="muted" data-i18n="jobs.detail.empty">
+            Select a job from the catalog to see its details, tailor a CV to it,
+            and generate a matching cover letter.
+          </p>
+        </div>
+
+        <div id="jb-detail" class="jb-detail" hidden>
+          <div class="jb-detail-head">
+            <div>
+              <h2 id="jb-detail-title" class="cl-h2"></h2>
+              <p id="jb-detail-company" class="jb-detail-company muted"></p>
+            </div>
+            <div class="jb-detail-actions">
+              <button id="jb-star" type="button" class="cl-btn jb-star-btn" aria-label="Star job"
+                      data-tooltip="Star job" data-i18n-attr="aria-label:jobs.star.star,data-tooltip:jobs.star.star" aria-pressed="false">
+                <span data-icon="star" data-icon-size="13"></span>
+              </button>
+              <a id="jb-tailor-link" class="cl-btn jb-downstream-link" href="/tailor"
+                 aria-label="Run ATS check for this job" data-tooltip="ATS check"
+                 data-i18n-attr="aria-label:jobs.downstream.tailor_aria,data-tooltip:jobs.downstream.tailor">
+                <span data-icon="target" data-icon-size="13"></span>
+                <span class="jb-downstream-label" data-i18n="jobs.downstream.tailor">ATS check</span>
+              </a>
+              <a id="jb-cover-link" class="cl-btn jb-downstream-link" href="/cover-letters"
+                 aria-label="Write cover letter for this job" data-tooltip="Cover letter"
+                 data-i18n-attr="aria-label:jobs.downstream.cover_aria,data-tooltip:jobs.downstream.cover">
+                <span data-icon="mail" data-icon-size="13"></span>
+                <span class="jb-downstream-label" data-i18n="jobs.downstream.cover">Cover letter</span>
+              </a>
+              <select id="jb-status-select" class="cl-select jb-status-select" aria-label="Job status" data-i18n-attr="aria-label:jobs.status_aria">
+                <option value="saved" data-i18n="jobs.status.saved">Saved</option>
+                <option value="open" data-i18n="jobs.status.open">Open</option>
+                <option value="speculative" data-i18n="jobs.status.speculative">Speculative</option>
+                <option value="applied" data-i18n="jobs.status.applied">Applied</option>
+                <option value="closed" data-i18n="jobs.status.closed">Closed</option>
+              </select>
+              <button id="jb-delete" type="button" class="cl-btn jb-del-btn" aria-label="Delete job"
+                      data-tooltip="Delete this job (your tailored docs are kept)"
+                      data-i18n-attr="aria-label:jobs.delete_aria,data-tooltip:jobs.delete_tooltip">
+                <span data-icon="trash" data-icon-size="13"></span>
+              </button>
+            </div>
+          </div>
+
+          <div id="jb-detail-meta" class="jb-detail-meta"></div>
+          <div id="jb-source-panel" class="jb-source-panel" aria-label="Job source state" data-i18n-attr="aria-label:jobs.source.panel_aria">
+            <div class="jb-source-head">
+              <div>
+                <strong id="jb-source-stale-state" data-i18n="jobs.source.state">Source state</strong>
+                <p id="jb-source-revalidation-status" class="muted"></p>
+              </div>
+              <button id="jb-source-revalidate" type="button" class="cl-btn">
+                <span data-icon="refresh-cw" data-icon-size="13"></span>
+                <span data-i18n="jobs.source.revalidate">Revalidate</span>
+              </button>
+            </div>
+	            <div id="jb-full-jd-gate" class="jb-full-jd-gate">
+	              <span id="jb-full-jd-status" class="jb-pill"></span>
+	              <label class="sr-only" for="jb-source-full-jd" data-i18n="jobs.source.full_jd_label">Reviewed full job description</label>
+	              <textarea id="jb-source-full-jd" class="cl-textarea" rows="3" placeholder="Paste reviewed full JD before tailoring if the source is incomplete." data-i18n-attr="placeholder:jobs.source.full_jd_placeholder"></textarea>
+            </div>
+          </div>
+          <div id="jb-experience-fit" class="jb-experience-fit" aria-label="Experience fit evidence" data-i18n-attr="aria-label:jobs.experience.aria"></div>
+
+          <div class="jb-oneclick">
+            <label class="cl-label" for="jb-source-cv" data-i18n="jobs.detail.source_cv">Source CV for one-click generate</label>
+            <div class="jb-oneclick-row">
+              <select id="jb-source-cv" class="cl-select" aria-label="Source CV" data-i18n-attr="aria-label:jobs.source_cv_aria"></select>
+              <button id="jb-generate" type="button" class="cl-btn cl-btn-primary jb-generate-btn">
+                <span data-icon="sparkles" data-icon-size="14"></span>
+                <span class="jb-generate-label" data-i18n="jobs.generate.full">Generate CV + cover letter</span>
+              </button>
+              <button id="jb-review" type="button" class="cl-btn jb-review-btn">
+                <span data-icon="scan-search" data-icon-size="14"></span>
+                <span class="jb-review-label" data-i18n="jobs.review.first">Review first</span>
+              </button>
+            </div>
+            <p class="cl-sub muted jb-oneclick-note" data-i18n="jobs.detail.note">
+              Tailors a copy of that CV to this job and writes a cover letter
+              grounded only in your CV. Invented facts and 2-page CVs are blocked.
+            </p>
+            <div id="jb-review-panel" class="jb-review-panel" hidden>
+              <div class="jb-review-head">
+                <strong data-i18n="jobs.review.heading">Reviewed CV changes</strong>
+                <button id="jb-apply-review" type="button" class="cl-btn cl-btn-primary">
+                  <span data-icon="check" data-icon-size="14"></span>
+                  <span class="jb-apply-label" data-i18n="jobs.packet.create">Create packet</span>
+                </button>
+              </div>
+              <p id="jb-review-summary" class="muted"></p>
+              <div id="jb-review-lineage" class="jb-review-lineage"></div>
+              <div id="jb-review-before-after" class="jb-review-before-after"></div>
+              <div id="jb-post-tailor-ats" class="jb-review-post-ats"></div>
+              <div id="jb-review-years-fit" class="jb-review-years-fit"></div>
+              <div id="jb-cover-grounding-status" class="jb-cover-grounding"></div>
+              <label id="jb-cover-review-panel" class="jb-cover-review-panel" hidden>
+                <input id="jb-approve-cover-review" type="checkbox" />
+                <span data-i18n="jobs.review.cover_confirm">Cover letter grounding reviewed against the tailored CV</span>
+              </label>
+              <pre id="jb-review-diff" class="jb-review-diff"></pre>
+            </div>
+          </div>
+
+          <div id="jb-gen-feedback" class="cl-feedback" role="status" aria-live="polite" hidden></div>
+
+          <div class="jb-linked" aria-label="Application packet" data-i18n-attr="aria-label:jobs.packet.aria">
+            <h3 class="cl-h3 jb-packet-title" data-i18n="jobs.packet.title">Application packet</h3>
+            <div id="jb-packet-state" class="jb-packet-state" aria-live="polite"></div>
+            <h4 class="jb-linked-subhead" data-i18n="jobs.linked.cvs">Tailored CVs</h4>
+            <div id="jb-cvs" class="cl-list"></div>
+            <h4 class="jb-linked-subhead jb-linked-h" data-i18n="jobs.linked.letters">Cover letters</h4>
+            <div id="jb-letters" class="cl-list"></div>
+          </div>
+
+          <details class="jb-jd-details">
+            <summary data-i18n="jobs.field.jd">Job description</summary>
+            <pre id="jb-jd-text" class="jb-jd-text"></pre>
+          </details>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="/static/vendor/supabase-js-2.110.0.js"></script>
+  <script src="/static/auth.js"></script>
+  <script src="/static/i18n.js"></script>
+  <script src="/static/icons.js"></script>
+  <script src="/static/command-palette.js"></script>
+  <script src="/static/credit-state.js"></script>
+  <script src="/static/jobs.js"></script>
+</body>
+</html>

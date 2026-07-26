@@ -1,0 +1,59 @@
+# VCS + editor cruft
+.git
+.DS_Store
+
+# Python build / cache artifacts
+.venv
+__pycache__
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+supabase/.temp/
+
+# Build output
+output/
+artifacts/
+*.pdf
+
+# Node (editor tooling, if ever vendored)
+node_modules
+
+# Secrets / local env
+.env
+.env.local
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*credential*.json
+*credentials*.json
+*cert*.json
+*key*.json
+*secret*.json
+*token*.json
+service-account*.json
+google*.json
+supabase*.json
+
+# Internal docs & planning artifacts — MUST NOT ship in a public image
+CLAUDE.md
+AGENTS.md
+TODOS.md
+.claude/
+plans/
+*.local.md
+
+# README/screenshot assets are not needed in the runtime image
+docs/screenshots/
+
+# The user's personal CV data never belongs in the image
+# (cv.example.yaml IS kept — it's the public sample the build/tests use)
+content/cv.yaml
+design/photos/
+
+# Browser tests may emit machine-local comparison failures.
+tests/e2e/baselines/*.actual.png

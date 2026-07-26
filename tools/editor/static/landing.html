@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+
+  <!-- ── SEO ───────────────────────────────────────────────────────────────
+       The canonical / og:url use PUBLIC_BASE_URL, injected server-side
+       (the literal __PUBLIC_BASE_URL__ token is replaced in server.py's
+       landing route). All other tags are static. -->
+  <title>CV Copilot — the one-page CV builder with AI cover letters</title>
+  <meta name="description" content="CV Copilot turns your experience into a typeset, single-page PDF CV — and writes grounded cover letters and job-tailored versions with your own AI key. No install, no second page.">
+  <meta name="robots" content="index, follow">
+  <link rel="canonical" href="__PUBLIC_BASE_URL__/">
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="CV Copilot">
+  <meta property="og:title" content="CV Copilot — the one-page CV builder with AI cover letters">
+  <meta property="og:description" content="A CV that always fits on one page. Grounded AI cover letters, job tailoring, bring your own LLM key.">
+  <meta property="og:url" content="__PUBLIC_BASE_URL__/">
+  <meta property="og:image" content="__PUBLIC_BASE_URL__/static/og-image.svg">
+
+  <!-- Twitter -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="CV Copilot — the one-page CV builder">
+  <meta name="twitter:description" content="A CV that always fits on one page. Grounded AI cover letters, job tailoring, bring your own LLM key.">
+  <meta name="twitter:image" content="__PUBLIC_BASE_URL__/static/og-image.svg">
+
+  <link rel="icon" href="/static/og-image.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/landing.css">
+</head>
+<body>
+  <!-- If a Supabase session already exists, this page is the wrong door:
+       redirect to the editor app at /app. Done as early as possible so a
+       logged-in user never sees the marketing flash. -->
+  <script src="/static/vendor/supabase-js-2.110.0.js"></script>
+  <script src="/static/i18n.js"></script>
+  <script src="/static/landing.js"></script>
+
+  <header class="lp-nav">
+    <a class="lp-brand" href="/">
+      <span class="lp-brand-mark" aria-hidden="true">◢</span>
+      <span class="lp-brand-name">CV Copilot</span>
+    </a>
+    <div class="lp-nav-right">
+      <div class="lp-lang" role="group" aria-label="Language">
+        <button type="button" class="lp-lang-btn" data-lang="en">EN</button>
+        <button type="button" class="lp-lang-btn" data-lang="de">DE</button>
+      </div>
+      <a class="lp-signin" href="/app" data-i18n="landing.nav.signin">Sign in</a>
+    </div>
+  </header>
+
+  <main>
+    <section class="lp-hero">
+      <p class="lp-eyebrow" data-i18n="landing.hero.eyebrow">One-page CVs · AI cover letters · job tailoring</p>
+      <h1 class="lp-title" data-i18n="landing.hero.title">A CV that always fits on one page.</h1>
+      <p class="lp-subtitle" data-i18n="landing.hero.subtitle">
+        CV Copilot turns your experience into a typeset, single-page PDF — and writes
+        grounded cover letters and job-tailored versions with your own AI key. No
+        install, no fonts to fight, no second page.
+      </p>
+      <div class="lp-cta-row">
+        <a class="lp-cta" href="/app" data-i18n="landing.hero.cta">Get started — it's free</a>
+        <span class="lp-cta-sub" data-i18n="landing.hero.cta_sub">
+          Sign in with a magic link. 3 free AI generations, then bring your own key.
+        </span>
+      </div>
+    </section>
+
+    <section class="lp-features" aria-label="Features">
+      <article class="lp-feature">
+        <span class="lp-feature-icon" aria-hidden="true">📄</span>
+        <h2 data-i18n="landing.feature.onepage.title">Guaranteed one page</h2>
+        <p data-i18n="landing.feature.onepage.body">
+          The renderer refuses to ship a two-page PDF — it tells you exactly which
+          section overflowed so you can trim it. Print-ready A4, every time.
+        </p>
+      </article>
+      <article class="lp-feature">
+        <span class="lp-feature-icon" aria-hidden="true">✉️</span>
+        <h2 data-i18n="landing.feature.cover.title">Grounded cover letters</h2>
+        <p data-i18n="landing.feature.cover.body">
+          Paste a job description and generate a cover letter grounded in your real
+          CV — every claim is cross-checked, so the AI can't invent facts.
+        </p>
+      </article>
+      <article class="lp-feature">
+        <span class="lp-feature-icon" aria-hidden="true">🎯</span>
+        <h2 data-i18n="landing.feature.tailor.title">Tailor to any job</h2>
+        <p data-i18n="landing.feature.tailor.body">
+          One click reorders and rewrites your genuine bullets for a specific role
+          and shows an ATS keyword-match score — your original CV is kept untouched.
+        </p>
+      </article>
+      <article class="lp-feature">
+        <span class="lp-feature-icon" aria-hidden="true">🔑</span>
+        <h2 data-i18n="landing.feature.byok.title">Bring your own key</h2>
+        <p data-i18n="landing.feature.byok.body">
+          After 3 free generations, add your own Anthropic key. It's encrypted at
+          rest, never logged, and the AI runs on your account — full control.
+        </p>
+      </article>
+    </section>
+
+    <section class="lp-how" aria-label="How it works">
+      <h2 class="lp-how-title" data-i18n="landing.how.title">How it works</h2>
+      <ol class="lp-steps">
+        <li><span class="lp-step-n">1</span><span data-i18n="landing.how.step1">Sign in and start from a clean template — or import your existing resume.</span></li>
+        <li><span class="lp-step-n">2</span><span data-i18n="landing.how.step2">Edit in a live form; the preview shows your real one-page PDF as you type.</span></li>
+        <li><span class="lp-step-n">3</span><span data-i18n="landing.how.step3">Tailor it to a job, generate a cover letter, and export a print-ready PDF.</span></li>
+      </ol>
+      <a class="lp-cta lp-cta-secondary" href="/app" data-i18n="landing.hero.cta">Get started — it's free</a>
+    </section>
+  </main>
+
+  <footer class="lp-footer">
+    <span data-i18n="landing.footer.tagline">CV Copilot — the one-page CV builder.</span>
+    <span class="lp-footer-sep" aria-hidden="true">·</span>
+    <a class="lp-footer-link" href="/privacy" data-i18n="landing.footer.privacy">Privacy</a>
+  </footer>
+</body>
+</html>

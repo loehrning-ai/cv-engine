@@ -1,0 +1,380 @@
+{
+  "schema_version": 2,
+  "audited_at": "2026-07-23",
+  "source": {
+    "package": "lucide-static",
+    "version": "1.26.0",
+    "repository": "https://github.com/lucide-icons/lucide",
+    "commit": "4e50f0d759d1eda269aaeae846cd0149e807353e",
+    "npm_integrity": "sha512-6yCpa2ONICjlE19BuneIi75ASd9cCZhqJlzhAlQBi+99m2aZd2cNzxFVbDgPu7JLBZR2uDYO/EpLYtnhGw5Niw==",
+    "tarball_sha256": "79c411da11484d3a32584492c6b1ae1673623db4cd437bf9a2ed619abb6ea10d",
+    "license": "LICENSES/lucide-1.26.0-ISC-and-Feather-MIT.txt",
+    "license_sha256": "b495047bd93a9b06913511076f504daba17d5bbeb3e0650f3bb53a4220329c57"
+  },
+  "detached_sha256": {
+    "asset_001": "08c982cdd3aac83ee4ce57faa8d60b4050a32372c26a6a522c2f5c2bc525d0f0",
+    "asset_002": "b182c2da9e7f94d65e3f9a70646a58b9d03201d8d78e9394c3a26dc08b2ee50d"
+  },
+  "upstream_icons": {
+    "arrow-left": {
+      "path": "icons/arrow-left.svg",
+      "sha256": "256a020b17b2b98cdf86f3f23f57412cec826b9d60599226f94ebb3aefc6488b"
+    },
+    "arrow-right": {
+      "path": "icons/arrow-right.svg",
+      "sha256": "87ed17f92157be7467556521d0881d9e9d8545b99c84f7eca846b854d16b156a"
+    },
+    "book-open-text": {
+      "path": "icons/book-open-text.svg",
+      "sha256": "bfb9ee7a38518a956d3a1cf26b32b4959417044faed8eb667d0e56421d7e86b9"
+    },
+    "bot": {
+      "path": "icons/bot.svg",
+      "sha256": "45ce199ff7cf174e41b00f2efe5e153d6e06d565bc429c43c812a6d4cdb14280"
+    },
+    "briefcase": {
+      "path": "icons/briefcase.svg",
+      "sha256": "d855a90211e4b007ecc3883f9306dc48f00a58449ebfb6d5fc5d9688d408fea7"
+    },
+    "check": {
+      "path": "icons/check.svg",
+      "sha256": "b856f9e754806901b44b5d54167c3c4cafc3e1731bdd0e2e68213c1026b9e70a"
+    },
+    "chevron-down": {
+      "path": "icons/chevron-down.svg",
+      "sha256": "9e96b3ea36d1bee703b5c8426a3c79577e762192733aa65abb7563aa1bf0c3af"
+    },
+    "chevron-up": {
+      "path": "icons/chevron-up.svg",
+      "sha256": "72bcc3ef57d7b69c60e1cb721f93359f941c8d408190324f13bbd3b3a1d5faef"
+    },
+    "chevrons-up-down": {
+      "path": "icons/chevrons-up-down.svg",
+      "sha256": "d9f6fcd1894135ea6c1543827df0e58d9095196764cda83873428182104335dc"
+    },
+    "circle-dot": {
+      "path": "icons/circle-dot.svg",
+      "sha256_ref": "asset_001"
+    },
+    "circle-plus": {
+      "path": "icons/circle-plus.svg",
+      "sha256_ref": "asset_002"
+    },
+    "code": {
+      "path": "icons/code.svg",
+      "sha256": "d443235ca5992c7a68751bead2c25a3ab1a35407f1a1e1f95fd8ea4a5215f3e4"
+    },
+    "corner-down-left": {
+      "path": "icons/corner-down-left.svg",
+      "sha256": "5b7196a3d160a8b6fe4781fbe710bc6a890f9c9ec25ace678da37d860e9e56fc"
+    },
+    "database": {
+      "path": "icons/database.svg",
+      "sha256": "898ad0bb4e4cc44483a3af895a9c6e27ee9ad03270d1718b9f9f6d649b5445c5"
+    },
+    "download": {
+      "path": "icons/download.svg",
+      "sha256": "d9744863916daa6d734b3981d6d0787dda65ac4f86854f22465f12103b245b85"
+    },
+    "ellipsis": {
+      "path": "icons/ellipsis.svg",
+      "sha256": "4600525b6a631fddb6fce36d1dac85ab5e397f53f3e031c1dd43201bf47b2490"
+    },
+    "external-link": {
+      "path": "icons/external-link.svg",
+      "sha256": "547d71904ada92522e6800f738812e6c9c7003d8cd0ca4e361541785b90b337e"
+    },
+    "eye": {
+      "path": "icons/eye.svg",
+      "sha256": "92f9fe3a8de6bad5b31def4065e1c36a6e647873814191d221c5555f1a5d34af"
+    },
+    "file-text": {
+      "path": "icons/file-text.svg",
+      "sha256": "3568e25d24fe3635cbeb6b7ce6ec4b3cbb96d7963936d24b0a88821622c99d9b"
+    },
+    "files": {
+      "path": "icons/files.svg",
+      "sha256": "a691696f2006e338d3372e8e10808fe0160149bfdff1f0b14d4679da20766138"
+    },
+    "folder-open": {
+      "path": "icons/folder-open.svg",
+      "sha256": "6dd05644a7f1020c5b7f36f8a62408771182a099937ebabd4214d2e04c1a1248"
+    },
+    "gem": {
+      "path": "icons/gem.svg",
+      "sha256": "befee769bf53413b0467ea6bcb1c96023530c1d37ede04a5ea332fed063c7be1"
+    },
+    "globe": {
+      "path": "icons/globe.svg",
+      "sha256": "6f62b74915b0fb8ae3bbb38b2ef0267aa0cf25f6af9a35d8dcb0638129211523"
+    },
+    "graduation-cap": {
+      "path": "icons/graduation-cap.svg",
+      "sha256": "c451035ed76064971c7537393c75b7a4f87f73956f03fdaca2a7148d009cb9b6"
+    },
+    "key": {
+      "path": "icons/key.svg",
+      "sha256": "309a3986be7fd4e8905e4958328e955e6d05e138753b1e60fc15ff2daa59e7ed"
+    },
+    "layout": {
+      "path": "icons/layout.svg",
+      "sha256": "cc4379a6db875cda72f6882ca5af5682735037c7270c876303b6ccdd4f49c747"
+    },
+    "layout-template": {
+      "path": "icons/layout-template.svg",
+      "sha256": "fbc484cea3c041775c7aeb8fe238288daf915baaad7ad4a0a2fd799487117768"
+    },
+    "lightbulb": {
+      "path": "icons/lightbulb.svg",
+      "sha256": "0ff27ad3ac2e31858de9023d16fa1bde5bfac88e019ac2b223e56335ca36e0b0"
+    },
+    "link": {
+      "path": "icons/link.svg",
+      "sha256": "90560ae8f78409b04df4390748d6585bad9924bff737b53cedafeedc83718526"
+    },
+    "list-tree": {
+      "path": "icons/list-tree.svg",
+      "sha256": "b73d3b178bafa885a11e753b5c4ae2cc8ce0ba3e7fe30a466eeb815e25b39fc5"
+    },
+    "loader": {
+      "path": "icons/loader.svg",
+      "sha256": "388fba09ab6489fd7ea4fe137adecba11f94148b52c660167f140a4960818032"
+    },
+    "log-out": {
+      "path": "icons/log-out.svg",
+      "sha256": "32347b81f93548a08e2ee0ace020fef0582a2336c378573df8f4b6c24a90e189"
+    },
+    "mail": {
+      "path": "icons/mail.svg",
+      "sha256": "a96a9f85831ecf2ce4c72630f7e5b3dbd8003b1ec093c72e69da9e745fbe1a19"
+    },
+    "maximize-2": {
+      "path": "icons/maximize-2.svg",
+      "sha256": "3567b670e829404a07d074a95c3e315dbcf8809f237f6f0f70e0cfe9da607386"
+    },
+    "minus": {
+      "path": "icons/minus.svg",
+      "sha256": "65d8b5e39a8f75dbe4b5eca3e6b3474ee88e3c043140daab3a8252228a6f5f35"
+    },
+    "monitor": {
+      "path": "icons/monitor.svg",
+      "sha256": "9727f506930ba9f28ee087973895b95d5d79cbe96ea51618a6f247d15aeef329"
+    },
+    "moon": {
+      "path": "icons/moon.svg",
+      "sha256": "39eb375695f58921a9c0076689dc25349d855a90567d86a10e9e7e6a4e81a0f1"
+    },
+    "palette": {
+      "path": "icons/palette.svg",
+      "sha256": "9771d02c049a7d0c4becf4458480de2b7d751507f348b4c9046bf09dfa689db6"
+    },
+    "panel-left-close": {
+      "path": "icons/panel-left-close.svg",
+      "sha256": "68d4be7b682cd0e075a233f3258bd0be51d6a8f012733fa6e1a36b28c77a7c8d"
+    },
+    "panel-left-open": {
+      "path": "icons/panel-left-open.svg",
+      "sha256": "5ae1b06466a68ebe14c7b233176776d77b3a92c7cf844b9648e722357b7434a3"
+    },
+    "pause": {
+      "path": "icons/pause.svg",
+      "sha256": "ec21ee329fec9bc78572f5ded199d6433e6bfd41fb39454c4935e89d6b709d75"
+    },
+    "phone": {
+      "path": "icons/phone.svg",
+      "sha256": "d4ef75c05376287be471105baea350c0ec187f67711bec6ccaabe820cdc32e98"
+    },
+    "plus": {
+      "path": "icons/plus.svg",
+      "sha256": "428287b08f9cb5c4757adbd1508f00653bc9ae60f9dbc8c6b490e1030c02837c"
+    },
+    "refresh-cw": {
+      "path": "icons/refresh-cw.svg",
+      "sha256": "9bd123e15ec7f82225284185ccb3543ef0105f06ac8651de760140c7871645b9"
+    },
+    "rotate-ccw": {
+      "path": "icons/rotate-ccw.svg",
+      "sha256": "68ece6dfe7e895bdde368dd1b099e52dc661d9b10313f56a9aea75e7a32a8c03"
+    },
+    "save": {
+      "path": "icons/save.svg",
+      "sha256": "d7ac5ecb2774c8257bcfc360b4ea57873c0406f6f88cebf467ad04706138497a"
+    },
+    "scan-search": {
+      "path": "icons/scan-search.svg",
+      "sha256": "5856aa37610ec223de74d98342ff653488975ecfce003de30acbddf698885b36"
+    },
+    "scissors": {
+      "path": "icons/scissors.svg",
+      "sha256": "16a6f301ba9683de63e62201b064aad8e7f6c04c43121f902dfda3d4f9f414c1"
+    },
+    "scroll-text": {
+      "path": "icons/scroll-text.svg",
+      "sha256": "b403a7fb72c0fa3ccddd5318c1103e1d6f87de7efc64a58ff336d0c6a08fcf36"
+    },
+    "search": {
+      "path": "icons/search.svg",
+      "sha256": "8425a539b136a7bfd958e2b2c8f2a2e3291487cd60aca07770f4b99bfb54c91f"
+    },
+    "settings": {
+      "path": "icons/settings.svg",
+      "sha256": "f4c487178e48d2a0858b490f189a9a52122cdd32094760bfc5753c0c77d47ebe"
+    },
+    "shield": {
+      "path": "icons/shield.svg",
+      "sha256": "cd48364271b6b483471c7028d25784a28141e51d594511e31b90a2d45b2be3ae"
+    },
+    "sparkles": {
+      "path": "icons/sparkles.svg",
+      "sha256": "d280a594ef348ac262a7980ca837d4a52f35455205882dc729ca4de160ef3ff3"
+    },
+    "star": {
+      "path": "icons/star.svg",
+      "sha256": "4244702de87a42975499dfd04cbbe9a297e7e7d62549d7ac3c8d5cd20dd5143e"
+    },
+    "sun": {
+      "path": "icons/sun.svg",
+      "sha256": "087147223eba41798492fddbcd6a94f4d0edd07ac0c0acdb8b8362e0f727b7c4"
+    },
+    "sun-moon": {
+      "path": "icons/sun-moon.svg",
+      "sha256": "10a5f9c8d6e1ecc332a3b48deadcfd85da15d255fe2038bb1e3b1d43931f8418"
+    },
+    "target": {
+      "path": "icons/target.svg",
+      "sha256": "763a6212e0877735638cfd057b12cf0c2b091e1c2b98b41fdd524324e4ef76b6"
+    },
+    "trash": {
+      "path": "icons/trash.svg",
+      "sha256": "609ae9f6bae83994057c935de760cae68b201fecd6bc2a7160002fd6e896cec3"
+    },
+    "trash-2": {
+      "path": "icons/trash-2.svg",
+      "sha256": "fa74fed046ff42c1e86240c8f7632d6a45df61d7f2c9b77fcfd27bcc04d8db11"
+    },
+    "triangle-alert": {
+      "path": "icons/triangle-alert.svg",
+      "sha256": "a692821083b11cc2b37ae81867fe8a66f20112ff1d80283e294234449145cdaf"
+    },
+    "trophy": {
+      "path": "icons/trophy.svg",
+      "sha256": "39fc473166af7cd27b6056c54395b1dcd6e4be5e150733123ddee6d04379f334"
+    },
+    "upload": {
+      "path": "icons/upload.svg",
+      "sha256": "d0df6ffb0515202caa24aec98b31ceedc37abde74ad8cae431d87777b6c898cd"
+    },
+    "user": {
+      "path": "icons/user.svg",
+      "sha256": "190dd64eb64b1a77b86c2500d001dbc7a9e717736cf8c171cc73441248fe0e1d"
+    },
+    "wand": {
+      "path": "icons/wand.svg",
+      "sha256": "76004fc5accfdde341c754e25f45e9a02a20b23c2edca25d80648e24f64dcf71"
+    },
+    "wrench": {
+      "path": "icons/wrench.svg",
+      "sha256": "a02346873654db841c460e6f156b88b4a7cddffae4088dde8f86e609e36192a6"
+    },
+    "x": {
+      "path": "icons/x.svg",
+      "sha256": "c913489d16421e21a9ea1c2d9e3aca5c9cd81fc3362d8e584191850fbe3e7105"
+    },
+    "zap": {
+      "path": "icons/zap.svg",
+      "sha256": "24c83cd461632a754bc1e144ebbebda145896976f9e129fe3b5f33fbb57966dc"
+    }
+  },
+  "consumers": {
+    "tools/editor/static/icons.js": {
+      "sha256": "324619c216620647e8cd6d33e08039f76f1113421cbcc7b5f36c033d74d74a6f",
+      "transformation": "Exact upstream inner SVG geometry; whitespace normalized; local registry keys may alias upstream names; shared SVG wrapper applied at runtime.",
+      "local_key_to_upstream_icon": {
+        "panel-left-open": "panel-left-open",
+        "panel-left-close": "panel-left-close",
+        "list-tree": "list-tree",
+        "file-text": "file-text",
+        "save": "save",
+        "refresh-cw": "refresh-cw",
+        "sun": "sun",
+        "moon": "moon",
+        "monitor": "monitor",
+        "scroll-text": "scroll-text",
+        "book-open-text": "book-open-text",
+        "files": "files",
+        "folder-open": "folder-open",
+        "minus": "minus",
+        "plus": "plus",
+        "maximize-2": "maximize-2",
+        "loader": "loader",
+        "check": "check",
+        "circle-filled": "circle-dot",
+        "circle-half": "circle-dot",
+        "sun-moon": "sun-moon",
+        "triangle-alert": "triangle-alert",
+        "corner-down-left": "corner-down-left",
+        "upload": "upload",
+        "x-close": "x",
+        "arrow-right": "arrow-right",
+        "wand": "wand",
+        "eye": "eye",
+        "layout": "layout",
+        "layout-template": "layout-template",
+        "code": "code",
+        "trash": "trash",
+        "trash-2": "trash-2",
+        "mail": "mail",
+        "arrow-left": "arrow-left",
+        "scissors": "scissors",
+        "chevron-up": "chevron-up",
+        "chevron-down": "chevron-down",
+        "chevrons-up-down": "chevrons-up-down",
+        "plus-circle": "circle-plus",
+        "user": "user",
+        "briefcase": "briefcase",
+        "graduation-cap": "graduation-cap",
+        "wrench": "wrench",
+        "lightbulb": "lightbulb",
+        "trophy": "trophy",
+        "more": "ellipsis",
+        "sparkles": "sparkles",
+        "target": "target",
+        "search": "search",
+        "scan-search": "scan-search",
+        "external-link": "external-link",
+        "zap": "zap",
+        "star": "star",
+        "pause": "pause",
+        "palette": "palette",
+        "settings": "settings",
+        "shield": "shield",
+        "log-out": "log-out",
+        "key": "key",
+        "download": "download",
+        "database": "database",
+        "rotate-ccw": "rotate-ccw",
+        "anthropic": "bot",
+        "gemini": "gem"
+      }
+    },
+    "engine/render/brand_icons.py": {
+      "sha256": "e558f73df4215184cd8e804ed9b1f990ecf5eb478f7a73ef60b6bdd8f9a15740",
+      "transformation": "Exact upstream inner SVG geometry; Python string serialization normalized; shared SVG wrapper and project colors applied at runtime.",
+      "semantic_key_to_upstream_icon": {
+        "all-social-profile-links": "external-link",
+        "mail": "mail",
+        "phone": "phone",
+        "web": "globe",
+        "link": "link"
+      }
+    }
+  },
+  "project_original_symbols": [
+    {
+      "path": "tools/editor/static/icons.js",
+      "symbol": "BRAND_GLYPH",
+      "description": "Abstract CV-page product glyph authored for this project; no third-party logo geometry."
+    }
+  ],
+  "trademark_policy": "No third-party brand logos are redistributed. Product and service names are text-only destination labels; no affiliation or endorsement is implied."
+}

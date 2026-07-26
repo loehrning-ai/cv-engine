@@ -1,0 +1,802 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>CV Copilot · Editor</title>
+  <link rel="icon" href="/static/og-image.svg" type="image/svg+xml">
+  <!-- No-flash theme restore: MUST be a render-blocking classic script BEFORE
+       the stylesheets so <html data-theme> is set on the first paint. External
+       (not inline) to satisfy the strict CSP (script-src 'self', no inline). -->
+  <script src="/static/theme-init.js"></script>
+  <!-- Vendor CodeMirror CSS first; local style.css overrides .CodeMirror sizing. -->
+  <link rel="stylesheet" href="/static/vendor/codemirror-5.65.21/lib/codemirror.css">
+  <link rel="stylesheet" href="/static/vendor/codemirror-5.65.21/addon/dialog/dialog.css">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <a class="skip-link" href="#workspace" data-i18n="a11y.skipToEditor">Skip to editor</a>
+  <div id="app">
+
+    <aside id="sidebar" aria-label="Workspace" data-i18n-attr="aria-label:sidebar.workspace">
+      <div class="sidebar-header">
+        <span class="brand-mark" data-icon="brand" aria-hidden="true"></span>
+        <div class="brand-stack">
+          <span class="brand-name">CV&nbsp;Copilot</span>
+          <span class="brand-sub">Editor</span>
+        </div>
+      </div>
+
+      <section id="sidebar-library" class="sidebar-library" aria-label="Document library" data-i18n-attr="aria-label:sidebar.library_aria">
+        <h3 class="sidebar-zone-title">
+          <span data-icon="folder-open" data-icon-size="12"></span>
+          <span data-i18n="sidebar.library">Library</span>
+        </h3>
+        <div id="sidebar-library-list" class="sidebar-library-list">
+          <div class="sidebar-library-skeleton" aria-hidden="true">
+            <span class="skel skel-line med"></span>
+            <span class="skel skel-line short"></span>
+            <span class="skel skel-line med"></span>
+          </div>
+        </div>
+      </section>
+
+      <section id="outline" class="outline" aria-label="Section outline" data-i18n-attr="aria-label:sidebar.outline_aria">
+        <h3 class="outline-title">
+          <span data-icon="list-tree" data-icon-size="12"></span>
+          <span data-i18n="sidebar.sections">Sections</span>
+        </h3>
+        <div id="outline-list">
+          <div class="outline-skeleton">
+            <span class="skel skel-line med"></span>
+            <span class="skel skel-line short"></span>
+            <span class="skel skel-line med"></span>
+            <span class="skel skel-line short"></span>
+            <span class="skel skel-line med"></span>
+          </div>
+        </div>
+      </section>
+
+      <div class="sidebar-footer">
+        <span class="hint"><span class="kbd">⌘</span><span class="kbd">S</span>&nbsp;save</span>
+        <span class="hint"><span class="kbd">⌘</span><span class="kbd">\</span>&nbsp;sidebar</span>
+      </div>
+    </aside>
+
+    <main id="workspace" tabindex="-1">
+      <h1 class="sr-only" data-i18n="a11y.editorHeading">CV Copilot — one-page CV editor</h1>
+      <header id="topbar">
+        <button
+          id="sidebar-toggle"
+          type="button"
+          class="icon-btn"
+          aria-label="Toggle sidebar"
+          title="Toggle sidebar"
+          aria-controls="sidebar"
+          data-tooltip="Toggle sidebar"
+          data-shortcut="⌘\"
+          data-i18n-attr="aria-label:app.toggle_sidebar,title:app.toggle_sidebar,data-tooltip:app.toggle_sidebar"
+        >
+          <span data-icon-collapse data-icon="panel-left-close" data-icon-size="17"></span>
+          <span data-icon-expand data-icon="panel-left-open" data-icon-size="17"></span>
+        </button>
+
+        <div class="crumbs">
+          <button
+            id="cv-switcher"
+            type="button"
+            class="cv-switcher"
+            aria-label="Open document catalog"
+            title="Open document catalog"
+            aria-haspopup="dialog"
+            aria-expanded="false"
+            aria-controls="cv-switcher-pop"
+            data-tooltip="Open document catalog"
+            data-i18n-attr="aria-label:catalog.trigger,title:catalog.trigger,data-tooltip:catalog.trigger"
+          >
+            <span data-icon="folder-open" data-icon-size="13"></span>
+            <span id="cv-switcher-label" data-i18n="catalog.trigger">Document catalog</span>
+          </button>
+        </div>
+
+        <div
+          id="cv-switcher-pop"
+          class="modal cv-catalog-modal"
+          hidden
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="cv-catalog-title"
+        >
+          <div class="modal-card cv-switcher-card cv-catalog-card">
+            <header class="modal-head cv-catalog-head">
+              <div>
+                <p class="modal-kicker" data-i18n="catalog.kicker">Documents</p>
+                <h2 id="cv-catalog-title" data-i18n="catalog.title">Document catalog</h2>
+              </div>
+              <button id="cv-catalog-close" type="button" class="icon-btn icon-btn-sm" aria-label="Close document catalog" data-i18n-attr="aria-label:catalog.close">
+                <span data-icon="x-close" data-icon-size="14"></span>
+              </button>
+            </header>
+            <div class="cv-catalog-toolbar" aria-label="Document filters" data-i18n-attr="aria-label:catalog.filters">
+              <label class="cv-catalog-search" for="cv-catalog-search">
+                <span data-icon="search" data-icon-size="13" aria-hidden="true"></span>
+                <input id="cv-catalog-search" type="search" autocomplete="off" placeholder="Search documents" data-i18n-attr="placeholder:catalog.search">
+              </label>
+              <div class="cv-catalog-filter-group" role="group" aria-label="Document type filters">
+                <button type="button" class="cv-catalog-filter is-active" data-doc-filter="all" aria-pressed="true"><span data-i18n="lib.filter.all">All</span><span class="cv-catalog-count" data-doc-count="all">0</span></button>
+                <button type="button" class="cv-catalog-filter" data-doc-filter="cv" aria-pressed="false"><span data-i18n="lib.filter.cv">CVs</span><span class="cv-catalog-count" data-doc-count="cv">0</span></button>
+                <button type="button" class="cv-catalog-filter" data-doc-filter="cover_letter" aria-pressed="false"><span data-i18n="lib.filter.cover">Cover letters</span><span class="cv-catalog-count" data-doc-count="cover_letter">0</span></button>
+              </div>
+            </div>
+            <div id="cv-switcher-list" class="cv-list cv-catalog-list" tabindex="-1"></div>
+            <footer class="cv-catalog-foot">
+              <span>
+                <span data-i18n="catalog.footer">CVs open in the editor. Cover letters open in the cover-letter workspace.</span>
+                <span id="cv-catalog-limit-note" class="cv-limit-note cv-catalog-limit-note" hidden aria-live="polite"></span>
+              </span>
+              <button id="cv-catalog-new-btn" type="button" class="modal-btn modal-btn-primary">
+                <span data-icon="plus-circle" data-icon-size="13"></span>
+                <span data-i18n="catalog.new_cv">New CV</span>
+              </button>
+            </footer>
+          </div>
+        </div>
+
+        <div class="topbar-right">
+          <div class="topbar-cluster topbar-cluster-document" aria-label="Current document commands">
+            <button
+              id="save-btn"
+              type="button"
+              aria-label="Save changes"
+              title="Save changes"
+              data-tooltip="Save changes"
+              data-shortcut="⌘S"
+              data-i18n-attr="aria-label:app.save_changes,title:app.save_changes,data-tooltip:app.save_changes"
+            >
+              <span data-icon="save" data-icon-size="14"></span>
+              <span data-icon="check" data-icon-size="14" data-action-success aria-hidden="true"></span>
+              <span class="btn-label" data-width-ghost="Speichern">Save</span>
+            </button>
+
+            <button
+              id="build-btn"
+              type="button"
+              class="build-btn"
+              aria-label="Build PDF"
+              title="Build PDF"
+              data-tooltip="Build the PDF · saves first, opens in a new tab"
+              data-i18n-attr="aria-label:app.build,title:app.build,data-tooltip:app.build_tooltip"
+            >
+              <span data-icon="file-text" data-icon-size="13"></span>
+              <span data-icon="check" data-icon-size="13" data-action-success aria-hidden="true"></span>
+              <span class="btn-label" data-width-ghost="PDF erstellen">Build PDF</span>
+            </button>
+
+            <button
+              id="theme-btn"
+              type="button"
+              class="appearance-btn"
+              aria-label="CV Appearance"
+              title="CV Appearance"
+              aria-haspopup="dialog"
+              aria-expanded="false"
+              aria-controls="theme-popover"
+              data-tooltip="CV Appearance — presets · font · spacing · accent"
+              data-i18n-attr="aria-label:mobile.cv_appearance,title:mobile.cv_appearance,data-tooltip:app.appearance_tooltip"
+            >
+              <span data-icon="palette" data-icon-size="14"></span>
+              <span>Appearance</span>
+            </button>
+
+            <button
+              id="template-btn"
+              type="button"
+              class="template-btn"
+              aria-label="Templates"
+              title="Templates"
+              aria-haspopup="dialog"
+              aria-expanded="false"
+              aria-controls="template-modal"
+              data-tooltip="Templates — choose the active CV layout"
+              data-i18n-attr="aria-label:templates.title,data-tooltip:templates.tooltip"
+            >
+              <span data-icon="layout-template" data-icon-size="14"></span>
+              <span class="btn-label" data-i18n="templates.title" data-width-ghost="Vorlagen">Templates</span>
+            </button>
+
+            <button
+              id="doc-actions-btn"
+              type="button"
+              class="doc-actions-btn"
+              aria-label="Document actions"
+              title="Document actions"
+              aria-haspopup="dialog"
+              aria-expanded="false"
+              aria-controls="doc-actions-popover"
+              data-tooltip="Document actions — import, create, rename, duplicate, download"
+              data-i18n-attr="aria-label:mobile.document_actions,title:mobile.document_actions,data-tooltip:app.doc_actions_tooltip"
+            >
+              <span data-icon="file-text" data-icon-size="14"></span>
+              <span>Document</span>
+              <span data-icon="chevron-down" data-icon-size="11"></span>
+            </button>
+          </div>
+
+          <div id="doc-actions-popover" class="popover" hidden role="dialog" aria-label="Document actions">
+            <div class="popover-card doc-actions-card">
+              <header class="popover-head">
+                <span class="popover-eyebrow">Document actions</span>
+                <span class="popover-hint">Manage the active CV and import source material.</span>
+              </header>
+              <div class="doc-actions-list">
+                <button id="import-btn" type="button" class="doc-action-row">
+                  <span data-icon="upload" data-icon-size="14"></span>
+                  <span>Import resume</span>
+                </button>
+                <button id="cv-new-btn" type="button" class="doc-action-row">
+                  <span data-icon="plus-circle" data-icon-size="14"></span>
+                  <span>New CV</span>
+                </button>
+                <button id="cv-rename-active-btn" type="button" class="doc-action-row">
+                  <span data-icon="wand" data-icon-size="14"></span>
+                  <span>Rename active CV</span>
+                </button>
+                <button id="cv-duplicate-active-btn" type="button" class="doc-action-row">
+                  <span data-icon="files" data-icon-size="14"></span>
+                  <span>Duplicate active CV</span>
+                </button>
+                <button id="cv-download-btn" type="button" class="doc-action-row">
+                  <span data-icon="download" data-icon-size="14"></span>
+                  <span>Download YAML</span>
+                </button>
+                <button id="cv-delete-active-btn" type="button" class="doc-action-row is-danger">
+                  <span data-icon="trash-2" data-icon-size="14"></span>
+                  <span>Delete active CV</span>
+                </button>
+              </div>
+              <span id="cv-limit-note" class="cv-limit-note" hidden></span>
+            </div>
+          </div>
+
+          <div class="topbar-cluster topbar-cluster-workflow">
+            <button
+              id="workflow-btn"
+              type="button"
+              class="workflow-btn"
+              aria-label="Applications"
+              aria-haspopup="dialog"
+              aria-controls="workflow-popover"
+              aria-expanded="false"
+              data-tooltip="Applications — jobs, cover letters, ATS scoring"
+              data-i18n-attr="aria-label:workflow.applications,data-tooltip:workflow.applications_tooltip"
+            >
+              <span data-icon="briefcase" data-icon-size="14"></span>
+              <span class="workflow-btn-label" data-i18n="workflow.applications">Applications</span>
+              <span data-icon="chevron-down" data-icon-size="11"></span>
+            </button>
+
+            <button
+              type="button"
+              id="ats-badge"
+              class="ats-badge"
+              data-state="idle"
+              data-band="neutral"
+              aria-label="ATS fit for the linked job"
+              aria-haspopup="dialog"
+              aria-expanded="false"
+              aria-controls="ats-popover"
+            >
+              <span data-icon="target" data-icon-size="11" aria-hidden="true"></span>
+              <span class="ats-badge-score">—</span>
+              <span class="ats-badge-label">ATS</span>
+            </button>
+          </div>
+
+          <div class="topbar-cluster topbar-cluster-state">
+            <span id="last-saved" class="last-saved" hidden></span>
+
+            <button
+              id="issues-pill"
+              type="button"
+              class="issues-pill"
+              data-tooltip="Required fields missing — click to jump to the first issue"
+              hidden
+            >
+              <span data-icon="triangle-alert" data-icon-size="11"></span>
+              <span class="issues-count">0</span>
+              <span class="issues-label">issues</span>
+            </button>
+
+            <span id="status" data-state="ready" aria-live="polite">
+              <span class="status-icon" data-icon-status="ready" data-icon="circle-filled" data-icon-size="8"></span>
+              <span class="status-icon" data-icon-status="modified" data-icon="circle-filled" data-icon-size="8"></span>
+              <span class="status-icon" data-icon-status="saving" data-icon="loader" data-icon-size="12"></span>
+              <span class="status-icon" data-icon-status="saved" data-icon="check" data-icon-size="12"></span>
+              <span class="status-icon" data-icon-status="error" data-icon="triangle-alert" data-icon-size="12"></span>
+              <span id="status-label">Ready</span>
+            </span>
+
+            <button
+              id="refresh-btn"
+              type="button"
+              class="icon-btn"
+              aria-label="Re-render preview"
+              title="Re-render preview"
+              data-tooltip="Re-render preview"
+              data-i18n-attr="aria-label:app.rerender_preview,title:app.rerender_preview,data-tooltip:app.rerender_preview"
+            ><span data-icon="refresh-cw" data-icon-size="15"></span></button>
+
+          </div>
+
+          <div class="topbar-cluster topbar-cluster-global" aria-label="Global utilities">
+            <button
+              id="settings-btn"
+              type="button"
+              class="icon-btn settings-btn"
+              aria-label="Settings & account"
+              title="Settings & account"
+              data-tooltip="Settings & account"
+              data-i18n-attr="aria-label:mobile.settings,title:mobile.settings,data-tooltip:mobile.settings"
+            >
+              <span data-icon="settings" data-icon-size="15"></span>
+            </button>
+
+            <button
+              id="theme-toggle"
+              type="button"
+              class="icon-btn"
+              aria-label="App theme quick toggle"
+              title="App theme quick toggle"
+              data-tooltip="App theme quick toggle"
+            >
+              <span data-icon-theme="mode" data-icon="sun-moon" data-icon-size="15"></span>
+            </button>
+
+            <div id="lang-toggle" class="lang-toggle" role="group" aria-label="Language" data-i18n-attr="aria-label:app.language">
+              <button type="button" class="lang-btn" data-lang="en">EN</button>
+              <button type="button" class="lang-btn" data-lang="de">DE</button>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <div id="panes">
+        <section id="editor-pane" aria-label="Editor">
+          <div id="view-tabs" role="toolbar" aria-label="Editor controls">
+            <div class="view-tablist" role="tablist" aria-label="Editor view">
+              <button class="view-tab is-active" data-view="form" role="tab" aria-selected="true">
+                <span data-icon="layout" data-icon-size="13"></span>
+                <span>Form</span>
+              </button>
+              <button class="view-tab" data-view="yaml" role="tab" aria-selected="false">
+                <span data-icon="code" data-icon-size="13"></span>
+                <span>YAML</span>
+              </button>
+            </div>
+            <button
+              id="collapse-all-btn"
+              type="button"
+              class="collapse-all-btn"
+              aria-label="Collapse all sections"
+              aria-pressed="false"
+              data-tooltip="Collapse all sections"
+            >
+              <span data-icon="chevrons-up-down" data-icon-size="12"></span>
+              <span class="collapse-all-label" data-i18n="app.collapse_all_short">Collapse all</span>
+            </button>
+            <span class="view-tabs-spacer"></span>
+            <button
+              id="lint-toggle"
+              type="button"
+              class="lint-toggle"
+              aria-pressed="true"
+              data-tooltip="Format YAML on save (⌘S only — never while you're typing)"
+              hidden
+            >
+              <span data-icon="sparkles" data-icon-size="11"></span>
+              <span class="lint-toggle-label">Format on save</span>
+              <span class="lint-toggle-state">on</span>
+            </button>
+            <span id="view-tabs-hint" class="view-tabs-hint muted">
+              Form is the source of truth — switching to YAML re-serialises it.
+            </span>
+          </div>
+          <div id="editor-host">
+            <div id="form-host" class="form-host"></div>
+            <div id="yaml-host" class="yaml-host">
+              <textarea id="editor"></textarea>
+            </div>
+          </div>
+        </section>
+
+        <div id="resizer" role="separator" aria-orientation="vertical" aria-label="Resize editor and preview panes" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50" tabindex="0" data-tooltip="Drag to resize · double-click to reset"></div>
+
+        <section id="preview-pane" aria-label="Live preview">
+          <div id="preview-header">
+            <div id="mode-toggle" class="seg-toggle" role="group" aria-label="Preview mode">
+              <button class="seg-btn" data-mode="continuous" type="button" data-tooltip="Continuous scrolling">
+                <span data-icon="scroll-text" data-icon-size="13"></span>
+                <span class="seg-label">Continuous</span>
+              </button>
+              <button class="seg-btn" data-mode="paged" type="button" data-tooltip="Paged · simulates PDF">
+                <span data-icon="book-open-text" data-icon-size="13"></span>
+                <span class="seg-label">Paged</span>
+              </button>
+            </div>
+
+            <div id="auto-render" class="seg-toggle seg-toggle-render" role="group" aria-label="Auto-render mode">
+              <button
+                class="seg-btn is-active"
+                data-auto="live"
+                type="button"
+                data-tooltip="Live · re-render after every edit"
+              >
+                <span class="seg-dot" aria-hidden="true"></span>
+                <span data-icon="zap" data-icon-size="12"></span>
+                <span class="seg-label">Live</span>
+              </button>
+              <button
+                class="seg-btn"
+                data-auto="manual"
+                type="button"
+                data-tooltip="Manual · only re-render on Refresh"
+              >
+                <span data-icon="pause" data-icon-size="12"></span>
+                <span class="seg-label">Manual</span>
+              </button>
+            </div>
+
+            <div class="preview-meta">
+              <span id="page-count" class="page-count" hidden>
+                <span data-icon="files" data-icon-size="11"></span>
+                <span id="page-count-text">…</span>
+              </span>
+              <div id="zoom-control" class="zoom-control" role="group" aria-label="Preview zoom">
+                <button id="zoom-out" type="button" class="zoom-btn" data-tooltip="Zoom out" data-shortcut="⌘−" aria-label="Zoom out">
+                  <span data-icon="minus" data-icon-size="12"></span>
+                </button>
+                <button id="zoom-fit" type="button" class="zoom-level" data-tooltip="Fit page" data-shortcut="⌘0" aria-label="Fit preview page">
+                  <span id="zoom-text">Fit</span>
+                </button>
+                <button id="zoom-in" type="button" class="zoom-btn" data-tooltip="Zoom in" data-shortcut="⌘+" aria-label="Zoom in">
+                  <span data-icon="plus" data-icon-size="12"></span>
+                </button>
+              </div>
+              <button id="preview-open-btn" type="button" class="icon-btn icon-btn-sm" data-tooltip="Open preview in new tab" aria-label="Open preview in new tab">
+                <span data-icon="maximize-2" data-icon-size="12"></span>
+              </button>
+            </div>
+          </div>
+          <div id="preview-loading" hidden>
+            <span class="spinner" aria-hidden="true"></span>
+            <span id="preview-loading-text">Rendering</span>
+          </div>
+          <div id="preview-wrap">
+            <div id="preview-stage">
+              <div id="preview-paper-frame" aria-hidden="true"></div>
+              <iframe
+                id="preview"
+                title="CV preview"
+                src="about:blank"
+                sandbox="allow-scripts"
+                referrerpolicy="no-referrer"
+              ></iframe>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <footer id="statusbar">
+        <span id="filepath" class="muted">
+          <span data-icon="file-text" data-icon-size="12"></span>
+          <span id="filepath-text">Stored CV · YAML</span>
+        </span>
+        <span class="status-dot" aria-hidden="true"></span>
+        <span id="bytes-info" class="muted">0 B</span>
+        <span class="spacer"></span>
+        <span id="position" class="muted">Ln 1, Col 1</span>
+      </footer>
+    </main>
+  </div>
+
+  <div id="tooltip" class="tooltip" role="tooltip"></div>
+
+  <!-- Applications popover -->
+  <div id="workflow-popover" class="popover" hidden role="dialog" aria-label="Applications" data-i18n-attr="aria-label:workflow.applications">
+    <div class="popover-card workflow-card">
+      <header class="popover-head">
+        <span class="popover-eyebrow" data-i18n="workflow.applications">Applications</span>
+        <span class="popover-hint" data-i18n="workflow.hint">Save a job, generate application documents, and review fit.</span>
+      </header>
+      <nav class="workflow-list" aria-label="Application tools" data-i18n-attr="aria-label:workflow.applications">
+        <span class="workflow-group-label" data-i18n="workflow.group.start">Start with a job</span>
+        <a
+          href="/jobs"
+          id="jobs-btn"
+          class="workflow-row"
+          aria-label="Start with a job"
+          data-i18n-attr="aria-label:workflow.jobs.aria,data-tooltip:workflow.jobs.tooltip"
+          data-tooltip="Saved jobs — save a job, then one-click tailor a CV + cover letter for it"
+        >
+          <span class="workflow-row-icon" data-icon="briefcase" data-icon-size="15"></span>
+          <span class="workflow-row-copy">
+            <span class="workflow-row-title" data-i18n="workflow.jobs.title">Start with a job</span>
+            <span class="workflow-row-sub" data-i18n="workflow.jobs.sub">Track roles, then generate a CV and cover letter</span>
+            <span class="workflow-row-meta" data-i18n="lib.storage.linked_job">Linked to this job</span>
+          </span>
+        </a>
+        <span class="workflow-group-label" data-i18n="workflow.group.documents">Document libraries</span>
+        <a
+          href="/app"
+          id="workflow-cvs-btn"
+          class="workflow-row"
+          aria-label="CV documents"
+          data-i18n-attr="aria-label:workflow.cvs.aria,data-tooltip:workflow.cvs.tooltip"
+          data-tooltip="CV documents — open saved CVs from the editor library"
+        >
+          <span class="workflow-row-icon" data-icon="file-text" data-icon-size="15"></span>
+          <span class="workflow-row-copy">
+            <span class="workflow-row-title" data-i18n="workflow.cvs.title">Saved CVs</span>
+            <span class="workflow-row-sub" data-i18n="workflow.cvs.sub">Open and manage CV documents</span>
+            <span class="workflow-row-meta" data-i18n="lib.storage.saved">Saved in Documents</span>
+          </span>
+        </a>
+        <a
+          href="/cover-letters"
+          id="cover-letters-btn"
+          class="workflow-row"
+          aria-label="Cover letters"
+          data-i18n-attr="aria-label:workflow.cover.title,data-tooltip:workflow.cover.tooltip"
+          data-tooltip="Saved cover letters — open drafts or generate from a CV + job description"
+        >
+          <span class="workflow-row-icon" data-icon="mail" data-icon-size="15"></span>
+          <span class="workflow-row-copy">
+            <span class="workflow-row-title" data-i18n="workflow.cover.title">Saved cover letters</span>
+            <span class="workflow-row-sub" data-i18n="workflow.cover.sub">Open drafts or generate a new letter</span>
+            <span class="workflow-row-meta" data-i18n="lib.storage.standalone_letter">Standalone letter</span>
+          </span>
+        </a>
+        <span class="workflow-group-label" data-i18n="workflow.group.review">Review/ATS</span>
+        <a
+          href="/tailor"
+          id="tailor-btn"
+          class="workflow-row"
+          aria-label="Score and optimize CV"
+          data-i18n-attr="aria-label:workflow.ats.aria,data-tooltip:workflow.ats.tooltip"
+          data-tooltip="Score and review — ATS breakdown plus a reviewed copy workflow"
+        >
+          <span class="workflow-row-icon" data-icon="target" data-icon-size="15"></span>
+          <span class="workflow-row-copy">
+            <span class="workflow-row-title" data-i18n="workflow.ats.title">ATS score and review</span>
+            <span class="workflow-row-sub" data-i18n="workflow.ats.sub">Score first, then create a reviewed copy</span>
+          </span>
+        </a>
+      </nav>
+    </div>
+  </div>
+
+  <!-- ATS detail popover -->
+  <div id="ats-popover" class="popover" hidden role="dialog" aria-label="ATS score details" data-i18n-attr="aria-label:mobile.ats_detail">
+    <div class="popover-card ats-card">
+      <header class="popover-head">
+        <span class="popover-eyebrow">ATS fit</span>
+        <span id="ats-popover-hint" class="popover-hint">Score a saved job to see details.</span>
+      </header>
+      <div id="ats-detail" class="ats-detail">
+        <div class="ats-detail-empty">
+          <span data-icon="target" data-icon-size="18"></span>
+          <p>No linked job for this CV. Save a job or generate a job-linked copy to show a score here.</p>
+        </div>
+      </div>
+      <footer class="ats-detail-foot">
+        <a href="/tailor" class="cv-new-btn">
+          <span data-icon="external-link" data-icon-size="12"></span>
+          <span>Open score workspace</span>
+        </a>
+      </footer>
+    </div>
+  </div>
+
+  <!-- First-run tour overlay -->
+  <div id="tour" class="tour" hidden role="dialog" aria-modal="true" aria-labelledby="tour-title">
+    <div class="tour-spotlight"></div>
+    <div class="tour-card">
+      <span class="tour-step"></span>
+      <h3 class="tour-title" id="tour-title"></h3>
+      <p class="tour-body"></p>
+      <div class="tour-foot">
+        <button id="tour-skip" type="button" class="tour-skip">Skip tour</button>
+        <span class="tour-spacer"></span>
+        <button id="tour-prev" type="button" class="tour-btn tour-btn-ghost">Back</button>
+        <button id="tour-next" type="button" class="tour-btn tour-btn-primary">Next</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Theme picker popover -->
+  <div id="theme-popover" class="popover" hidden role="dialog" aria-label="CV Appearance">
+    <div class="popover-card appearance-card">
+      <header class="popover-head">
+          <span class="popover-eyebrow">CV Appearance</span>
+          <span class="popover-hint">Rendered CV presets plus live font, spacing, and accent controls.</span>
+      </header>
+      <section class="appearance-panel" aria-label="Current appearance">
+        <div class="appearance-field appearance-field-accent">
+          <span class="appearance-field-label">Accent</span>
+          <button id="accent-trigger" type="button" class="appearance-color" data-tooltip="Accent colour — applied to the rendered CV" aria-label="Choose accent colour" data-i18n-attr="aria-label:app.accent_picker_base_aria">
+            <span class="appearance-swatch" id="accent-swatch"></span>
+            <span class="appearance-color-value" id="accent-value">#111111</span>
+          </button>
+          <input id="accent-input" class="appearance-color-input" type="color" value="#111111" aria-label="Accent colour" tabindex="-1">
+        </div>
+        <label class="appearance-field" for="font-select">
+          <span class="appearance-field-label">Font</span>
+          <select id="font-select" class="appearance-select" aria-label="Font family">
+            <option value="serif">Serif</option>
+            <option value="sans">Sans</option>
+            <option value="mono">Mono</option>
+          </select>
+        </label>
+        <label class="appearance-field" for="density-select">
+          <span class="appearance-field-label">Spacing</span>
+          <select id="density-select" class="appearance-select" aria-label="Page density">
+            <option value="tight">Tight</option>
+            <option value="normal">Normal</option>
+            <option value="airy">Airy</option>
+          </select>
+        </label>
+        <div class="appearance-field appearance-field-paper" role="group" aria-labelledby="paper-theme-label">
+          <span id="paper-theme-label" class="appearance-field-label">Paper</span>
+          <div id="paper-theme-options" class="paper-theme-options">
+            <button type="button" class="paper-theme-btn" data-paper-theme="white" aria-label="White paper">
+              <span class="paper-theme-swatch paper-white"></span><span>White</span>
+            </button>
+            <button type="button" class="paper-theme-btn" data-paper-theme="creme" aria-label="Creme paper">
+              <span class="paper-theme-swatch paper-creme"></span><span>Creme</span>
+            </button>
+            <button type="button" class="paper-theme-btn" data-paper-theme="soft-gray" aria-label="Soft gray paper">
+              <span class="paper-theme-swatch paper-soft-gray"></span><span>Gray</span>
+            </button>
+            <button type="button" class="paper-theme-btn" data-paper-theme="blue-tint" aria-label="Blue tint paper">
+              <span class="paper-theme-swatch paper-blue-tint"></span><span>Blue</span>
+            </button>
+          </div>
+        </div>
+      </section>
+      <div id="theme-list" class="theme-list"></div>
+    </div>
+  </div>
+
+  <!-- Template picker modal -->
+  <div id="template-modal" class="modal template-modal" hidden role="dialog" aria-modal="true" aria-labelledby="template-modal-title">
+    <div class="modal-card template-modal-card">
+      <header class="modal-head">
+        <div>
+          <span class="modal-kicker" data-i18n="templates.kicker">CV templates</span>
+          <h2 id="template-modal-title" data-i18n="templates.title">Templates</h2>
+        </div>
+        <button id="template-close" class="icon-btn icon-btn-sm" type="button" aria-label="Close templates" data-i18n-attr="aria-label:templates.close">
+          <span data-icon="x-close" data-icon-size="14"></span>
+        </button>
+      </header>
+      <div class="modal-body template-modal-body">
+        <p class="modal-hint" data-i18n="templates.hint">Choose a built-in layout. The active CV keeps its content, colour, font, and paper settings; some templates may adjust spacing for fit.</p>
+        <label class="template-search-field" for="template-search">
+          <span data-icon="scan-search" data-icon-size="13" aria-hidden="true"></span>
+          <input id="template-search" type="search" autocomplete="off" spellcheck="false" placeholder="Search templates" aria-label="Search templates" data-i18n-attr="placeholder:templates.search.placeholder,aria-label:templates.search.aria">
+        </label>
+        <div class="template-selection-summary" aria-live="polite">
+          <span id="template-current">Current: Classic</span>
+          <span id="template-selected">Selected: Classic</span>
+        </div>
+        <div id="template-gallery" class="template-gallery template-modal-gallery"></div>
+        <p id="template-empty" class="template-empty" hidden data-i18n="templates.empty">No templates match this search.</p>
+      </div>
+      <footer class="modal-foot template-modal-foot">
+        <button id="template-cancel" class="modal-btn modal-btn-ghost" type="button" data-i18n="templates.cancel">Cancel</button>
+        <button id="template-apply" class="modal-btn modal-btn-primary" type="button" disabled data-i18n="templates.apply">Apply template</button>
+      </footer>
+    </div>
+  </div>
+
+  <!-- Import modal -->
+  <div id="import-modal" class="modal" hidden role="dialog" aria-label="Import resume">
+    <div class="modal-card">
+      <header class="modal-head">
+        <h2>Import resume</h2>
+        <button id="import-close" class="icon-btn icon-btn-sm" aria-label="Close">
+          <span data-icon="x-close" data-icon-size="14"></span>
+        </button>
+      </header>
+      <nav class="modal-tabs" role="tablist">
+        <button class="modal-tab is-active" data-tab="ai" role="tab">
+          <span data-icon="sparkles" data-icon-size="13"></span>
+          <span>AI extract <span id="ai-tab-badge" class="modal-tab-badge" hidden>Claude</span></span>
+        </button>
+        <button class="modal-tab" data-tab="rendercv" role="tab">
+          <span data-icon="arrow-right" data-icon-size="13"></span>
+          <span>rendercv YAML</span>
+        </button>
+        <button class="modal-tab" data-tab="text" role="tab">
+          <span data-icon="wand" data-icon-size="13"></span>
+          <span>Plain text</span>
+        </button>
+      </nav>
+      <div class="modal-body">
+        <p id="import-hint" class="modal-hint"></p>
+
+        <!-- Selected provider + free-generations status (AI tab only). -->
+        <div id="ai-key-panel" class="ai-key-panel" hidden>
+          <div id="ai-key-status" class="ai-key-status"></div>
+          <div id="ai-key-entry" class="ai-key-entry">
+            <label for="ai-key-input">Provider key</label>
+            <div class="ai-key-row">
+              <input id="ai-key-input" type="password" autocomplete="off"
+                     spellcheck="false" placeholder="Manage provider keys in Account" />
+              <button id="ai-key-save" type="button" class="modal-btn modal-btn-primary">Save key</button>
+            </div>
+            <div id="ai-key-msg" class="ai-key-msg" role="alert" hidden></div>
+          </div>
+          <button id="ai-key-remove" type="button" class="ai-key-remove" hidden>Remove key</button>
+        </div>
+
+        <div id="import-dropzone" class="modal-dropzone" hidden>
+          <span data-icon="upload" data-icon-size="22" aria-hidden="true"></span>
+          <strong>Drop a PDF, DOCX, TXT, or Markdown file here</strong>
+          <span class="modal-dropzone-sub">or paste text below</span>
+          <input id="import-file-input" type="file" hidden
+                 accept=".pdf,.docx,.txt,.md,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown">
+          <button id="import-file-btn" type="button" class="modal-btn modal-btn-ghost">Choose file…</button>
+          <span id="import-file-name" class="modal-file-name muted" hidden></span>
+        </div>
+
+        <textarea
+          id="import-input"
+          class="modal-textarea"
+          placeholder="Paste here…"
+          aria-label="Paste résumé or CV text to import"
+          data-i18n-attr="aria-label:import.paste_aria"
+          spellcheck="false"
+        ></textarea>
+        <div id="import-error" class="modal-error" role="alert" hidden></div>
+      </div>
+      <footer class="modal-foot">
+        <span id="import-status" class="modal-status muted"></span>
+        <span class="spacer"></span>
+        <button id="import-cancel" class="modal-btn modal-btn-ghost" type="button">Cancel</button>
+        <button id="import-apply" class="modal-btn modal-btn-primary" type="button">
+          Convert &amp; replace
+        </button>
+      </footer>
+    </div>
+  </div>
+
+  <!--
+    Supabase JS client (auth) loaded from a pinned local vendor asset, then our auth gate. auth.js
+    MUST load before app.js: it patches window.fetch to attach the bearer
+    token on every /api/* call, and gates the editor behind a session.
+
+    NOTE FOR THE OPERATOR: magic-link email sign-in works out of the box
+    with Supabase's default email sender. "Continue with Google" / "with
+    GitHub" additionally require you to configure each provider's OAuth
+    client id + secret in the Supabase dashboard (Authentication →
+    Providers). For production email deliverability, configure a custom
+    SMTP sender (e.g. Resend) in the dashboard as well.
+  -->
+  <script src="/static/vendor/supabase-js-2.110.0.js"></script>
+  <script src="/static/auth.js"></script>
+  <script src="/static/i18n.js"></script>
+  <script src="/static/icons.js"></script>
+  <script src="/static/command-palette.js"></script>
+  <script src="/static/vendor/codemirror-5.65.21/lib/codemirror.js"></script>
+  <script src="/static/vendor/codemirror-5.65.21/mode/yaml/yaml.js"></script>
+  <script src="/static/vendor/codemirror-5.65.21/addon/edit/closebrackets.js"></script>
+  <script src="/static/vendor/codemirror-5.65.21/addon/search/searchcursor.js"></script>
+  <script src="/static/vendor/codemirror-5.65.21/addon/search/search.js"></script>
+  <script src="/static/vendor/codemirror-5.65.21/addon/dialog/dialog.js"></script>
+  <script src="/static/vendor/codemirror-5.65.21/addon/selection/active-line.js"></script>
+  <script src="/static/vendor/js-yaml-4.3.0/js-yaml.min.js"></script>
+  <script src="/static/form.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

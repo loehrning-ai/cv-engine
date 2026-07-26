@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Privacy Policy — CV Copilot</title>
+  <meta name="description" content="Self-hosting privacy template for CV Copilot operators: data categories, optional processors, deployment-specific locations, and user rights.">
+  <meta name="robots" content="index, follow">
+  <link rel="canonical" href="__PUBLIC_BASE_URL__/privacy">
+  <link rel="icon" href="/static/og-image.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/landing.css">
+</head>
+<body>
+  <header class="lp-nav">
+    <a class="lp-brand" href="/">
+      <span class="lp-brand-mark" aria-hidden="true">◢</span>
+      <span class="lp-brand-name">CV Copilot</span>
+    </a>
+    <div class="lp-nav-right">
+      <a class="lp-signin" href="/app">Open the app</a>
+    </div>
+  </header>
+
+  <main class="lp-legal">
+    <h1>Privacy Policy</h1>
+    <p class="lp-legal-updated">Self-hosting template — last updated 2026-07-23. The operator must verify this page against the deployed configuration before serving users.</p>
+
+    <p>
+      This template describes the data paths CV Copilot can use. The operator
+      of this instance must adapt it to the services actually enabled, the
+      regions actually selected, the controller's legal identity and address,
+      and the law that applies to the deployment. Features that are not
+      configured do not create the corresponding processor relationship.
+    </p>
+
+    <h2>1. Controller &amp; contact</h2>
+    <p>
+      The data controller for CV Copilot is the operator of this service. For any
+      privacy request — access, correction, export, deletion, or a question
+      about this policy — contact:
+    </p>
+    <ul>
+      <li><strong>Email:</strong> <a href="mailto:__PRIVACY_CONTACT__">__PRIVACY_CONTACT__</a></li>
+      <li><strong>Service:</strong> <a href="__PUBLIC_BASE_URL__/">__PUBLIC_BASE_URL__</a></li>
+    </ul>
+
+    <h2>2. What data we process</h2>
+    <ul>
+      <li><strong>Account:</strong> when hosted account features are enabled, your email address (for sign-in), an optional display name, and your language preference.</li>
+      <li><strong>Your documents:</strong> the CVs, cover letters, and saved job descriptions you create. These contain whatever you choose to put in them — typically your professional history and contact details.</li>
+      <li><strong>AI key (optional):</strong> if you bring your own API key for a supported AI provider, it is stored <strong>encrypted</strong> (AES-256-GCM envelope encryption) and is never shown back to you, logged, or exported — we only retain the provider name and the last 4 characters so you can recognise it.</li>
+      <li><strong>Usage:</strong> a minimal record of AI generations for credit accounting in hosted mode and, only when the operator enables analytics, product-usage events.</li>
+    </ul>
+
+    <h2>3. Processors &amp; sub-processors</h2>
+    <p>
+      The following services are integration options, not a declaration that
+      every instance uses them. The operator must remove unused rows and state
+      its actual contract, transfer safeguards, and selected region.
+    </p>
+    <table>
+      <thead>
+        <tr><th>Processor</th><th>Purpose</th><th>Location / safeguard</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Supabase</td><td>Database, authentication, and account/document storage, only when configured</td><td>Region and safeguards selected by the operator</td></tr>
+        <tr><td>Anthropic</td><td>AI generation, extraction, and scoring, only when Claude is selected</td><td>Provider terms, region, and transfer safeguards selected by the operator or key owner</td></tr>
+        <tr><td>Google Gemini</td><td>AI generation, extraction, and scoring, only when Gemini is selected</td><td>Provider terms, region, and transfer safeguards selected by the operator or key owner</td></tr>
+        <tr><td>Cloudflare R2</td><td>Rendered-PDF storage, only when all R2 settings are configured</td><td>Location and safeguards selected by the operator</td></tr>
+        <tr><td>Resend</td><td>Sign-in email delivery, only when configured by the operator</td><td>Location and safeguards selected by the operator</td></tr>
+        <tr><td>PostHog</td><td>Product analytics, only when analytics is explicitly enabled</td><td>Hosting mode, region, and safeguards selected by the operator</td></tr>
+      </tbody>
+    </table>
+
+    <h2>4. The AI / bring-your-own-key data flow</h2>
+    <p>
+      AI features are explicit actions you trigger (generating a cover letter,
+      tailoring a CV). When you do, the relevant text — the content of the CV
+      and/or job description involved — is sent to the selected AI provider
+      (Anthropic/Claude or Google/Gemini) to produce the result. We do not send
+      your data to any AI provider in the background.
+    </p>
+    <ul>
+      <li><strong>Managed credits:</strong> your first few generations run on our operator-funded provider account.</li>
+      <li><strong>Your own key:</strong> after that, you add your own API key for a supported AI provider. From then on, AI calls run on <em>your</em> provider account and are subject to that provider's terms and data handling. Your key is decrypted only in-memory, only for the moment of the outbound call, and never written to logs.</li>
+    </ul>
+    <p>
+      The selected provider processes API inputs under the contract attached to
+      the operator-funded account or your own key. Review that contract and the
+      configured retention and training controls before enabling an AI path.
+    </p>
+
+    <h2>5. Data locations</h2>
+    <p>
+      Data location is deployment-specific. A local-only installation keeps the
+      render and editor paths on the operator's machine. A hosted instance may
+      store account data, documents, and PDFs in the regions selected for its
+      database and object storage. An AI action transmits the relevant text to
+      the selected provider or operator-configured endpoint. The operator must
+      publish those actual locations and any international-transfer safeguards.
+    </p>
+
+    <h2>6. Your rights</h2>
+    <p>Under the GDPR you can, at any time:</p>
+    <ul>
+      <li><strong>Structured account export:</strong> download JSON from <a href="/account">Account &amp; data</a>. It contains your active profile, live CVs and cover letters, saved jobs, job-import provenance, live application-packet lineage, and provider/key hints. It does not include soft-deleted or archived records, usage/credit events, PDF-artifact metadata or R2 files, application-attempt audit rows, tailor-review state, uploaded photo files, or encrypted key material. Contact the controller for an access request broader than this product export.</li>
+      <li><strong>Rectification:</strong> edit your profile and documents directly in the app.</li>
+      <li><strong>Erasure:</strong> request deletion from <a href="/account">Account &amp; data</a>. Documents and related product views are hidden immediately. You can cancel strictly before the 30-day deadline. At D+30 the production worker makes the request irrevocable, deletes the account's Cloudflare R2 object prefix when configured, deletes its exact uploaded-photo directory, and then hard-deletes the Supabase Auth user so owned database rows cascade. If R2 or photo cleanup fails, the worker leaves the database account intact and retries; completion can therefore occur after D+30.</li>
+      <li><strong>Withdraw the AI key:</strong> remove your stored provider key at any time.</li>
+      <li><strong>Complaint:</strong> you may lodge a complaint with your local data-protection authority.</li>
+    </ul>
+
+    <h2>7. Retention</h2>
+    <p>
+      In the default production stack, account data is kept while the account
+      exists. A deletion request hides documents immediately and becomes
+      eligible for the ordered external-file and active-database purge at D+30.
+      Cleanup failures are retried rather than bypassed. Database backups,
+      analytics events, AI-provider records, email-delivery records, and their
+      final expiry remain deployment-specific; the operator must state those
+      retention periods here.
+    </p>
+
+    <h2>8. Security</h2>
+    <p>
+      Every account's data is isolated at the database level (row-level
+      security scoped to your account). BYO API keys are envelope-encrypted with
+      AES-256-GCM and bound to your account identity. Secrets are never logged.
+    </p>
+
+    <p class="lp-legal-note">
+      Operator requirement: complete and verify this template before exposing a
+      hosted instance. The repository maintainers are not automatically the data
+      controller for independently operated deployments. This template is not
+      legal advice.
+    </p>
+  </main>
+
+  <footer class="lp-footer">
+    <span>CV Copilot — the one-page CV builder.</span>
+    <span class="lp-footer-sep" aria-hidden="true">·</span>
+    <a class="lp-footer-link" href="/">Home</a>
+  </footer>
+</body>
+</html>

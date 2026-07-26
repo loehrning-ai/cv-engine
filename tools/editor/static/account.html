@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>CV Copilot · Settings &amp; account</title>
+  <link rel="icon" href="/static/og-image.svg" type="image/svg+xml">
+  <meta name="robots" content="noindex">
+  <!-- No-flash theme restore — render-blocking, before the stylesheets. -->
+  <script src="/static/theme-init.js"></script>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/cover-letters.css">
+  <link rel="stylesheet" href="/static/account.css">
+</head>
+<body>
+  <a class="skip-link" href="#ac-main" data-i18n="a11y.skipToContent">Skip to main content</a>
+  <div id="ac-app" class="cl-app">
+__CHROME_TOPBAR__
+    <div class="ac-mobile-actions" aria-label="Account utilities" data-i18n-attr="aria-label:account.mobile.utilities">
+      <a href="/privacy" class="cl-btn ac-btn-inline">
+        <span data-icon="shield" data-icon-size="14"></span>
+        <span data-i18n="nav.privacy">Privacy</span>
+      </a>
+      <button id="ac-mobile-logout" type="button" class="cl-btn ac-btn-inline">
+        <span data-icon="log-out" data-icon-size="14"></span>
+        <span data-i18n="app.sign_out">Sign out</span>
+      </button>
+    </div>
+
+    <main class="ac-main" id="ac-main" tabindex="-1">
+      <h1 class="sr-only" data-i18n="a11y.accountHeading">Account &amp; settings</h1>
+      <!-- Settings ------------------------------------------------------- -->
+      <section id="settings" class="ac-card ac-settings-card" aria-labelledby="ac-settings-h">
+        <h2 id="ac-settings-h" class="cl-h2">Settings</h2>
+        <p class="cl-sub muted">
+          App theme controls the editor chrome only. CV Appearance remains document-specific in the editor.
+        </p>
+
+        <span class="cl-label" id="ac-app-theme-label">App theme</span>
+        <div class="ac-segmented" role="group" aria-labelledby="ac-app-theme-label">
+          <button id="ac-theme-light" type="button" class="ac-segment" data-theme-choice="light">
+            <span data-icon="sun" data-icon-size="14"></span>
+            <span>Light</span>
+          </button>
+          <button id="ac-theme-dark" type="button" class="ac-segment" data-theme-choice="dark">
+            <span data-icon="moon" data-icon-size="14"></span>
+            <span>Dark</span>
+          </button>
+        </div>
+        <p class="ac-fineprint muted">Stored in this browser for no-flash reloads. It does not change PDF colors.</p>
+
+        <div class="ac-defaults" aria-labelledby="ac-cv-defaults-h">
+          <h3 id="ac-cv-defaults-h" class="ac-subheading">New CV defaults</h3>
+          <p class="cl-sub muted">Applied only when you create a new CV from this browser. Existing documents are not changed.</p>
+          <div class="ac-default-grid">
+            <label class="cl-label" for="ac-default-accent">Accent</label>
+            <input id="ac-default-accent" class="cl-input ac-color-input" type="color" value="#111111" aria-label="Default CV accent">
+
+            <label class="cl-label" for="ac-default-font">Font</label>
+            <select id="ac-default-font" class="cl-select" aria-label="Default CV font">
+              <option value="">Use skeleton default</option>
+              <option value="serif">Serif</option>
+              <option value="sans">Sans</option>
+              <option value="mono">Mono</option>
+            </select>
+
+            <label class="cl-label" for="ac-default-density">Spacing</label>
+            <select id="ac-default-density" class="cl-select" aria-label="Default CV spacing">
+              <option value="">Use skeleton default</option>
+              <option value="tight">Tight</option>
+              <option value="normal">Normal</option>
+              <option value="airy">Airy</option>
+            </select>
+
+            <label class="cl-label" for="ac-default-template">Template</label>
+            <select id="ac-default-template" class="cl-select" aria-label="Default CV template">
+              <option value="">Use skeleton default</option>
+              <option value="classic">Classic</option>
+              <option value="modern">Modern</option>
+              <option value="sidebar">Sidebar</option>
+              <option value="executive">Executive</option>
+              <option value="technical">Technical</option>
+              <option value="ats-compact">ATS Compact</option>
+              <option value="consulting">Consulting</option>
+              <option value="minimal">Minimal</option>
+            </select>
+
+            <label class="cl-label" for="ac-default-paper">Paper</label>
+            <select id="ac-default-paper" class="cl-select" aria-label="Default CV paper">
+              <option value="">Use skeleton default</option>
+              <option value="white">White</option>
+              <option value="creme">Creme</option>
+              <option value="soft-gray">Soft gray</option>
+              <option value="blue-tint">Blue tint</option>
+            </select>
+          </div>
+          <div class="ac-btn-row">
+            <button id="ac-save-defaults" type="button" class="cl-btn cl-btn-primary ac-btn-inline">
+              <span data-icon="check" data-icon-size="14"></span>
+              <span>Save new-CV defaults</span>
+            </button>
+            <button id="ac-reset-defaults" type="button" class="cl-btn ac-btn-inline ac-btn-quiet">
+              <span data-icon="rotate-ccw" data-icon-size="14"></span>
+              <span>Reset defaults</span>
+            </button>
+            <a id="ac-new-cv" href="/app?action=new-cv" class="cl-btn ac-btn-inline ac-btn-quiet" data-tooltip="Create a new CV in the editor">
+              <span data-icon="plus-circle" data-icon-size="14"></span>
+              <span data-i18n="app.new_cv">New CV</span>
+            </a>
+          </div>
+          <div id="ac-settings-feedback" class="cl-feedback" role="status" aria-live="polite" hidden></div>
+        </div>
+      </section>
+
+      <section id="job-sources" class="ac-card ac-job-sources-card" aria-labelledby="ac-job-sources-h">
+        <h2 id="ac-job-sources-h" class="cl-h2" data-i18n="account.job_sources.heading">Job sources</h2>
+        <p class="cl-sub muted" data-i18n="account.job_sources.intro">
+          Configure browser defaults for Jobs search and review server-reported source availability. Source capability is operator-controlled.
+        </p>
+        <div id="ac-job-source-status" class="ac-source-status" aria-live="polite">
+          <span class="ac-source-dot"></span>
+          <span data-i18n="account.job_sources.status.checking">Checking job source status...</span>
+        </div>
+        <ul class="ac-source-policy">
+          <li data-i18n="account.job_sources.policy.no_blind_fetch">No blind LinkedIn fetch.</li>
+          <li data-i18n="account.job_sources.policy.no_sessions">No stored LinkedIn sessions.</li>
+          <li data-i18n="account.job_sources.policy.no_cookies">No stored LinkedIn cookies.</li>
+          <li data-i18n="account.job_sources.policy.no_stealth">No stealth automation.</li>
+          <li data-i18n="account.job_sources.policy.read_only">Local databases are read-only preview sources.</li>
+        </ul>
+        <div class="ac-defaults ac-job-source-defaults" aria-labelledby="ac-job-source-defaults-h">
+          <h3 id="ac-job-source-defaults-h" class="ac-subheading" data-i18n="account.job_sources.defaults_heading">Jobs search defaults</h3>
+          <p class="cl-sub muted" data-i18n="account.job_sources.defaults_intro">Stored only in this browser and applied when you open Jobs import preview.</p>
+          <div class="ac-default-grid">
+            <label class="cl-label" for="ac-job-source-source" data-i18n="account.job_sources.source">Source</label>
+            <select id="ac-job-source-source" class="cl-select" aria-label="Default job source" data-i18n-attr="aria-label:account.job_sources.source_aria">
+              <option value="" data-i18n="account.job_sources.source.none">No source default</option>
+              <option value="linkedin" data-i18n="account.job_sources.source.linkedin">LinkedIn local DB</option>
+              <option value="manual" data-i18n="account.job_sources.source.manual">Manual paste/export</option>
+              <option value="all" data-i18n="account.job_sources.source.all">All local sources</option>
+            </select>
+
+            <label class="cl-label" for="ac-job-source-title" data-i18n="account.job_sources.title">Title</label>
+            <input id="ac-job-source-title" class="cl-input" type="text" maxlength="300" placeholder="Data Engineer">
+
+            <label class="cl-label" for="ac-job-profile-family" data-i18n="account.job_sources.family">Job family</label>
+            <input id="ac-job-profile-family" class="cl-input" type="text" maxlength="160" placeholder="Data / ML">
+
+            <label class="cl-label" for="ac-job-profile-titles" data-i18n="account.job_sources.titles">Preferred titles</label>
+            <textarea id="ac-job-profile-titles" class="cl-textarea" rows="2" maxlength="1200" placeholder="Data Engineer, Analytics Engineer"></textarea>
+
+            <label class="cl-label" for="ac-job-profile-mode" data-i18n="account.job_sources.search_mode">Title match</label>
+            <select id="ac-job-profile-mode" class="cl-select" aria-label="Default title match mode" data-i18n-attr="aria-label:account.job_sources.search_mode_aria">
+              <option value="flexible" data-i18n="jobs.filter.mode.flexible">Flexible</option>
+              <option value="strict" data-i18n="jobs.filter.mode.strict">Strict title</option>
+            </select>
+
+            <label class="cl-label" for="ac-job-source-country" data-i18n="account.job_sources.country">Country</label>
+            <input id="ac-job-source-country" class="cl-input" type="text" maxlength="80" placeholder="DE">
+
+            <label class="cl-label" for="ac-job-source-region" data-i18n="account.job_sources.region">Region</label>
+            <input id="ac-job-source-region" class="cl-input" type="text" maxlength="120" placeholder="Berlin">
+
+            <label class="cl-label" for="ac-job-profile-cities" data-i18n="account.job_sources.cities">Cities</label>
+            <textarea id="ac-job-profile-cities" class="cl-textarea" rows="2" maxlength="1200" placeholder="Berlin, Warsaw"></textarea>
+
+            <label class="cl-label" for="ac-job-source-remote" data-i18n="account.job_sources.remote.label">Remote mode</label>
+            <select id="ac-job-source-remote" class="cl-select" aria-label="Default remote mode" data-i18n-attr="aria-label:account.job_sources.remote.aria">
+              <option value="" data-i18n="account.job_sources.remote.any">Any</option>
+              <option value="onsite" data-i18n="account.job_sources.remote.onsite">Onsite</option>
+              <option value="hybrid" data-i18n="account.job_sources.remote.hybrid">Hybrid</option>
+              <option value="remote" data-i18n="account.job_sources.remote.remote">Remote</option>
+            </select>
+
+            <label class="cl-label" for="ac-job-source-seniority" data-i18n="account.job_sources.seniority">Seniority</label>
+            <input id="ac-job-source-seniority" class="cl-input" type="text" maxlength="120" placeholder="Senior">
+
+            <label class="cl-label" for="ac-job-profile-min-years" data-i18n="account.job_sources.min_years">Minimum years</label>
+            <input id="ac-job-profile-min-years" class="cl-input" type="number" min="0" max="40" step="0.5" inputmode="decimal" placeholder="5">
+
+            <label class="cl-label" for="ac-job-source-freshness" data-i18n="account.job_sources.freshness.label">Freshness</label>
+            <select id="ac-job-source-freshness" class="cl-select" aria-label="Default freshness" data-i18n-attr="aria-label:account.job_sources.freshness.aria">
+              <option value="" data-i18n="account.job_sources.freshness.any">Any</option>
+              <option value="fresh" data-i18n="account.job_sources.freshness.fresh_only">Fresh only</option>
+              <option value="stale" data-i18n="account.job_sources.freshness.stale_only">Stale only</option>
+            </select>
+
+            <label class="cl-label" for="ac-job-profile-ranking" data-i18n="account.job_sources.ranking">Ranking weights</label>
+            <textarea id="ac-job-profile-ranking" class="cl-textarea" rows="2" maxlength="300" placeholder="title=.35, location=.25, freshness=.2, experience=.2"></textarea>
+          </div>
+          <div class="ac-btn-row">
+            <button id="ac-save-job-sources" type="button" class="cl-btn cl-btn-primary ac-btn-inline">
+              <span data-icon="check" data-icon-size="14"></span>
+              <span data-i18n="account.job_sources.save">Save job defaults</span>
+            </button>
+            <button id="ac-reset-job-sources" type="button" class="cl-btn ac-btn-inline ac-btn-quiet">
+              <span data-icon="rotate-ccw" data-icon-size="14"></span>
+              <span data-i18n="account.job_sources.reset">Reset job defaults</span>
+            </button>
+            <button id="ac-export-job-profile" type="button" class="cl-btn ac-btn-inline ac-btn-quiet">
+              <span data-icon="download" data-icon-size="14"></span>
+              <span data-i18n="account.job_sources.export">Export profile</span>
+            </button>
+            <button id="ac-import-job-profile" type="button" class="cl-btn ac-btn-inline ac-btn-quiet">
+              <span data-icon="upload" data-icon-size="14"></span>
+              <span data-i18n="account.job_sources.import">Import profile</span>
+            </button>
+            <a id="ac-open-jobs" href="/jobs" class="cl-btn ac-btn-inline ac-btn-quiet">
+              <span data-icon="briefcase" data-icon-size="14"></span>
+              <span data-i18n="account.job_sources.open_jobs">Open Jobs</span>
+            </a>
+          </div>
+          <div id="ac-job-source-feedback" class="cl-feedback" role="status" aria-live="polite" hidden></div>
+        </div>
+      </section>
+
+      <!-- Profile -------------------------------------------------------- -->
+      <section class="ac-card" aria-labelledby="ac-profile-h">
+        <h2 id="ac-profile-h" class="cl-h2" data-i18n="account.profile.heading">Profile</h2>
+        <p class="cl-sub muted" data-i18n="account.profile.intro">Your display name and the language the editor starts in.</p>
+
+        <label class="cl-label" for="ac-email" data-i18n="account.profile.email">Email</label>
+        <input id="ac-email" class="cl-input" type="email" disabled
+               data-tooltip="Your sign-in email — managed by your login provider" />
+
+        <label class="cl-label" for="ac-name" data-i18n="account.profile.name">Display name</label>
+        <input id="ac-name" class="cl-input" type="text" maxlength="200"
+               placeholder="e.g. Alex Doe" />
+
+        <label class="cl-label" for="ac-lang" data-i18n="account.profile.language">Default language</label>
+        <select id="ac-lang" class="cl-select" aria-label="Default language">
+          <option value="en">English</option>
+          <option value="de">Deutsch</option>
+        </select>
+
+        <button id="ac-save-profile" type="button" class="cl-btn cl-btn-primary">
+          <span data-icon="check" data-icon-size="14"></span>
+          <span data-i18n="account.profile.save">Save profile</span>
+        </button>
+        <div id="ac-profile-feedback" class="cl-feedback" role="status" aria-live="polite" hidden></div>
+      </section>
+
+      <!-- BYO key + provider/model selector ------------------------------ -->
+      <section class="ac-card" aria-labelledby="ac-key-h">
+        <h2 id="ac-key-h" class="cl-h2" data-i18n="account.ai.heading">AI provider &amp; key</h2>
+        <p class="cl-sub muted" data-i18n="account.ai.intro">
+          Pick which AI you generate with, then add that provider's API key —
+          you pay the provider directly. We store your key encrypted
+          (AES-256-GCM) and never show it again, only the last 4 characters.
+          Managed free credits apply to Anthropic only; other hosted providers need your own key.
+        </p>
+
+        <!-- Provider cards (radiogroup) — pick which AI to generate with. -->
+        <span class="cl-label" id="ac-provider-label" data-i18n="account.ai.provider">Provider</span>
+        <div id="ac-provider" class="ac-providers" role="radiogroup" aria-labelledby="ac-provider-label">
+          <label class="ac-provider-card" data-provider="anthropic">
+            <input type="radio" name="ac-provider" value="anthropic" checked />
+            <span class="ac-provider-glyph" data-icon="anthropic" data-icon-size="22"></span>
+            <span class="ac-provider-body">
+              <span class="ac-provider-head">
+                <span class="ac-provider-name">Claude</span>
+                <span class="ac-provider-check" data-icon="check" data-icon-size="13" aria-hidden="true"></span>
+              </span>
+              <span class="ac-provider-meta" data-i18n="account.ai.provider_anthropic">Anthropic · managed credits or BYO key</span>
+              <span class="ac-provider-state" data-provider-state="anthropic">
+                <span class="ac-state-dot"></span>
+                <span class="ac-state-text" data-i18n="account.ai.checking">Checking…</span>
+              </span>
+            </span>
+          </label>
+          <label class="ac-provider-card" data-provider="gemini">
+            <input type="radio" name="ac-provider" value="gemini" />
+            <span class="ac-provider-glyph" data-icon="gemini" data-icon-size="22"></span>
+            <span class="ac-provider-body">
+              <span class="ac-provider-head">
+                <span class="ac-provider-name">Gemini</span>
+                <span class="ac-provider-check" data-icon="check" data-icon-size="13" aria-hidden="true"></span>
+              </span>
+              <span class="ac-provider-meta" data-i18n="account.ai.provider_gemini">Google · your own API key</span>
+              <span class="ac-provider-state" data-provider-state="gemini">
+                <span class="ac-state-dot"></span>
+                <span class="ac-state-text" data-i18n="account.ai.checking">Checking…</span>
+              </span>
+            </span>
+          </label>
+        </div>
+
+        <!-- Model dropdown (populated per provider from /api/models) -->
+        <label class="cl-label" for="ac-model" data-i18n="account.ai.model">Model</label>
+        <select id="ac-model" class="cl-select" aria-label="Model"></select>
+
+        <!-- Connection status for the SELECTED provider. -->
+        <div id="ac-key-status" class="ac-keystatus" data-state="loading">
+          <span class="ac-keystatus-dot" id="ac-key-dot"></span>
+          <span id="ac-key-text" class="muted" data-i18n="account.ai.checking">Checking…</span>
+        </div>
+
+        <label class="cl-label" for="ac-key-input" id="ac-key-label">API key</label>
+        <div class="ac-key-field">
+          <input id="ac-key-input" class="cl-input ac-key-input" type="password" autocomplete="off"
+                 spellcheck="false" autocapitalize="off" placeholder="sk-ant-…"
+                 aria-describedby="ac-key-fineprint" />
+          <button id="ac-key-reveal" type="button" class="ac-key-reveal"
+                  aria-pressed="false" data-tooltip="Show / hide the key you typed" hidden>
+            <span id="ac-key-reveal-label" data-i18n="account.ai.reveal">Show</span>
+          </button>
+        </div>
+        <p id="ac-key-fineprint" class="ac-fineprint muted">
+          <span class="ac-lock" data-icon="shield" data-icon-size="13" aria-hidden="true"></span>
+          <span data-i18n="account.ai.fineprint">The key is validated with a tiny test call, encrypted, and stored.
+          It is never logged or returned.</span>
+        </p>
+
+        <div class="ac-btn-row">
+          <button id="ac-save-key" type="button" class="cl-btn cl-btn-primary ac-btn-inline">
+            <span data-icon="key" data-icon-size="14"></span>
+            <span id="ac-save-key-label">Connect key</span>
+          </button>
+          <button id="ac-remove-key" type="button" class="cl-btn ac-btn-inline ac-btn-quiet" hidden>
+            <span data-icon="trash" data-icon-size="13"></span>
+            <span data-i18n="account.ai.remove">Remove key</span>
+          </button>
+        </div>
+        <div id="ac-key-feedback" class="cl-feedback" role="status" aria-live="polite" hidden></div>
+        <div id="ac-provider-feedback" class="cl-feedback" role="status" aria-live="polite" hidden></div>
+      </section>
+
+      <!-- Data & privacy disclosures ------------------------------------ -->
+      <section class="ac-card" aria-labelledby="ac-data-h">
+        <h2 id="ac-data-h" class="cl-h2" data-i18n="account.data.heading">Your data</h2>
+        <p class="cl-sub muted">
+          The JSON download covers your active profile, live documents, saved
+          jobs, import provenance, live application-packet lineage, and
+          provider/key hints. It excludes deleted/archived records, operational
+          audit rows, rendered or uploaded files, and encrypted key material.
+          See the
+          <a href="/privacy" class="ac-link">privacy policy</a> for the full list
+          and the controller contact for broader access requests.
+        </p>
+
+        <ul class="ac-disclosures muted">
+          <li><strong>Storage:</strong> in hosted mode, profiles, documents, and jobs are stored in the operator's Supabase project under account-scoped row-level security. Region and backup retention are operator-selected.</li>
+          <li><strong>AI:</strong> when you generate or tailor, the relevant text is sent to the selected AI provider. With your own key, generations bill to that provider account.</li>
+          <li><strong>PDFs:</strong> when Cloudflare R2 is configured, rendered PDFs are stored in the operator's bucket and served via short-lived signed links; otherwise PDFs stream directly.</li>
+          <li><strong>Email:</strong> sign-in links use the email provider configured by the operator.</li>
+          <li><strong>Analytics:</strong> product analytics run only when the operator enables and configures PostHog.</li>
+        </ul>
+
+        <div class="ac-btn-row">
+          <a id="ac-export" class="cl-btn ac-btn-inline" href="/api/account/export">
+            <span data-icon="download" data-icon-size="14"></span>
+            <span data-i18n="account.data.export">Download my data (JSON)</span>
+          </a>
+        </div>
+        <div id="ac-export-feedback" class="cl-feedback" role="status" aria-live="polite" hidden></div>
+      </section>
+
+      <!-- Danger zone --------------------------------------------------- -->
+      <section class="ac-card ac-danger" aria-labelledby="ac-danger-h">
+        <h2 id="ac-danger-h" class="cl-h2" data-i18n="account.delete.heading">Delete account</h2>
+
+        <!-- Default: no pending deletion -->
+        <div id="ac-delete-default">
+          <p class="cl-sub muted">
+            Your documents are hidden immediately. You can cancel strictly
+            before D+30. At D+30 the production worker makes deletion
+            irrevocable, removes active R2/photo files, then hard-deletes the
+            account and its owned database rows. External cleanup failures
+            delay database deletion and are retried.
+          </p>
+          <label class="ac-confirm-label">
+            <span class="cl-label" for="ac-confirm" data-i18n-html="account.delete.confirm_hint">Type <code>DELETE</code> to confirm</span>
+            <input id="ac-confirm" class="cl-input" type="text" autocomplete="off"
+                   placeholder="DELETE" />
+          </label>
+          <div class="ac-btn-row">
+            <button id="ac-delete" type="button" class="cl-btn ac-btn-danger ac-btn-inline" disabled>
+              <span data-icon="trash" data-icon-size="14"></span>
+              <span data-i18n="account.delete.button">Delete my account</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Pending state: deletion scheduled -->
+        <div id="ac-delete-pending" hidden>
+          <p class="cl-sub" id="ac-pending-text">
+            Your account is scheduled for deletion.
+          </p>
+          <div class="ac-btn-row">
+            <button id="ac-cancel-delete" type="button" class="cl-btn cl-btn-primary ac-btn-inline">
+              <span data-icon="rotate-ccw" data-icon-size="14"></span>
+              <span data-i18n="account.delete.cancel">Cancel deletion</span>
+            </button>
+          </div>
+        </div>
+
+        <div id="ac-delete-feedback" class="cl-feedback" role="status" aria-live="polite" hidden></div>
+      </section>
+    </main>
+  </div>
+
+  <script src="/static/vendor/supabase-js-2.110.0.js"></script>
+  <script src="/static/auth.js"></script>
+  <script src="/static/i18n.js"></script>
+  <script src="/static/icons.js"></script>
+  <script src="/static/command-palette.js"></script>
+  <script src="/static/account.js"></script>
+</body>
+</html>

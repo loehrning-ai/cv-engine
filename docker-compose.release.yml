@@ -1,0 +1,16 @@
+# Production-only override. Always combine this with docker-compose.yml.
+#
+# It removes local build definitions and rejects missing image references.
+# The deploy workflow supplies image-ID-qualified references from the scanned
+# artifact, so a VPS release cannot rebuild source or fall back to mutable tags.
+services:
+  app:
+    build: !reset null
+    image: ${ONEPAGER_APP_IMAGE:?ONEPAGER_APP_IMAGE must be an immutable sha256 reference}
+
+  purge-worker:
+    image: ${ONEPAGER_APP_IMAGE:?ONEPAGER_APP_IMAGE must be an immutable sha256 reference}
+
+  caddy:
+    build: !reset null
+    image: ${ONEPAGER_CADDY_IMAGE:?ONEPAGER_CADDY_IMAGE must be an immutable sha256 reference}

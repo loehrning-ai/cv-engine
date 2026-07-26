@@ -1,0 +1,65 @@
+# Build artefacts
+output/
+artifacts/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.eggs/
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Virtualenvs
+.venv/
+venv/
+env/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Local env files
+.env
+.env.local
+
+# Node (only if you add JS tooling later)
+node_modules/
+
+# Logs
+*.log
+
+# Supabase CLI scratch state
+supabase/.temp/
+
+# PII — the owner's real CV and résumé (use content/cv.example.yaml as the
+# tracked default). The repo is private, but PII still never gets committed.
+content/cv.yaml
+/*.pdf
+
+# Per-owner uploaded CV photos are runtime user PII — never track them (they
+# are served only via the authenticated /api/asset/photo route).
+design/photos/
+
+# Claude Code workflow/worktree state — internal AI-tooling instruction files
+# must never appear in this public repo (they leak vault paths, client names,
+# and private project topology). Keep on disk for local agents; never track.
+.claude/
+CLAUDE.md
+AGENTS.md
+*.local.md
+plans/
+TODOS.md
+
+# Failed visual-regression runs write candidate renders next to the baselines.
+# They are review artifacts, never content to commit.
+tests/e2e/baselines/*.actual.png

@@ -1,0 +1,768 @@
+/*
+  Cover-letter editor styles + SHARED SUBPAGE CHROME owner.
+  Reuses the design tokens defined in style.css (--bg-*, --text-*, --accent,
+  --border, etc.) so the page matches the CV editor's look without
+  duplicating the palette.
+
+  NOTE: this file is loaded by ALL subpages (jobs, tailor, account,
+  cover-letters) because it owns the shared .cl-topbar chrome styles that
+  pair with static/_chrome.html (the serve-time-injected topbar fragment,
+  plan 108 stage 2). Page-specific rules stay in the page's own CSS.
+*/
+
+.cl-app {
+  display: flex;
+  flex-direction: column;
+  /* 100dvh (dynamic viewport height) tracks the mobile browser's collapsing
+     URL bar; plain 100vh is the LARGEST viewport, so on mobile the shared
+     jobs/cover-letters/tailor/account shell overflowed and its sticky primary
+     action bar sat behind the browser chrome. 100vh stays as the fallback for
+     engines without dvh. */
+  height: 100vh;
+  height: 100dvh;
+  background: var(--bg-app);
+  color: var(--text);
+  font-family: var(--font-sans);
+}
+
+.cl-topbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  /* One chrome height everywhere — style.css :root owns --header-h and is
+     loaded by every subpage, so no divergent fallback (was 52px). */
+  height: var(--header-h);
+  padding: 0 14px;
+  /* Same chrome surface as the editor #topbar (plan 108 stage 3) — the
+     grey/white bar split was two-navbar drift, not design. */
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.cl-back, .cl-title, .cl-nav, .cl-utility-nav, .cl-topbar-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+/* Fixed chrome slots keep EN/DE text swaps from moving neighbouring controls. */
+.cl-back, .cl-title {
+  flex: 0 0 auto;
+  justify-content: center;
+  min-width: 0;
+  white-space: nowrap;
+}
+.cl-back span:not([data-icon]),
+.cl-title span:not([data-icon]) {
+  min-width: 0;
+  overflow: visible;
+  text-overflow: clip;
+}
+.cl-topbar > .cl-back { min-width: max-content; }
+.cl-topbar > .cl-back {
+  width: auto;
+  max-width: none;
+}
+.cl-title {
+  justify-content: flex-start;
+  width: auto;
+  min-width: max-content;
+  max-width: min(320px, 32vw);
+}
+.cl-back {
+  color: var(--text-muted);
+  text-decoration: none;
+  font-size: 13px;
+  padding: 5px 9px;
+  border-radius: 8px;
+  transition: background var(--t, .15s) var(--ease, ease);
+}
+.cl-back:hover { background: var(--bg-hover); color: var(--text); }
+.cl-back[aria-current="page"] {
+  color: var(--accent);
+  background: var(--accent-mist);
+}
+.cl-back[aria-current="page"]:hover { background: var(--accent-soft); }
+.cl-title { font-weight: 600; font-size: 14px; }
+
+/* Primary destination nav (Applications / Account) — sits between
+   the page title and the right-hand utility cluster on every sub-page so the
+   whole app is reachable from anywhere. The ⌘K palette mirrors these. */
+.cl-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 2px;
+}
+.cl-nav .cl-back {
+  width: auto;
+  min-width: max-content;
+}
+.cl-utility-nav {
+  margin-left: 2px;
+  flex: 0 0 auto;
+}
+.cl-utility-nav .cl-back {
+  width: auto;
+  min-width: max-content;
+}
+.cl-topbar-right {
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+.cl-topbar-right .cl-back {
+  width: 124px;
+  min-width: 124px;
+}
+.cl-credit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 68px;
+  inline-size: 68px;
+  max-inline-size: 68px;
+  min-block-size: 28px;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: clip;
+  padding: 4px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-surface);
+}
+.cl-credit[data-credit-state="connected"] {
+  color: var(--success);
+  border-color: var(--success);
+  background: var(--success-soft, var(--bg-surface));
+}
+.cl-credit[data-credit-state="remaining"] {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft, var(--bg-surface));
+}
+.cl-credit[data-credit-state="zero"] {
+  color: var(--warning);
+  border-color: var(--warning);
+  background: var(--warning-soft, var(--bg-surface));
+}
+.cl-credit[data-credit-state="unavailable"] {
+  color: var(--text-muted);
+  border-color: var(--border);
+  background: var(--bg-surface);
+}
+
+.cl-main {
+  display: grid;
+  grid-template-columns: minmax(360px, 460px) 1fr;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 0;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.tool-page-head {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 14px 24px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-surface);
+}
+.tool-page-title {
+  margin: 0;
+  font-family: var(--font-display, inherit);
+  font-size: 19px;
+  font-weight: 650;
+  line-height: 1.2;
+}
+.tool-page-sub {
+  margin: 3px 0 0;
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+.tool-page-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+.tool-badge {
+  display: inline-flex;
+  align-items: center;
+  min-block-size: 26px;
+  padding: 4px 9px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  font-size: 11px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+.tool-badge-filter {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft, var(--bg-elevated));
+}
+.tool-badge-doc {
+  color: var(--success);
+  border-color: var(--success);
+  background: var(--success-soft, var(--bg-elevated));
+}
+.tool-badge-counter {
+  color: var(--text-muted);
+  background: var(--bg-elevated);
+}
+
+.cl-pane {
+  padding: 22px 24px;
+  overflow-y: auto;
+  min-height: 0;
+  min-width: 0;
+}
+.cl-form-pane {
+  border-right: 1px solid var(--border);
+  background: var(--bg-surface);
+}
+.cl-result-pane { display: flex; flex-direction: column; background: var(--bg-app); }
+
+.cl-h2 { font-size: 17px; font-weight: 600; margin: 0 0 4px; font-family: var(--font-display, inherit); }
+.cl-h3 { font-size: 13px; font-weight: 600; margin: 0 0 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); }
+.cl-sub { font-size: 12.5px; line-height: 1.5; margin: 0 0 18px; }
+.muted { color: var(--text-muted); }
+
+.cl-label {
+  display: block;
+  font-size: 11.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .03em;
+  color: var(--text-muted);
+  margin: 14px 0 5px;
+}
+
+.cl-select, .cl-input, .cl-textarea {
+  width: 100%;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  transition: border-color var(--t, .15s) var(--ease, ease), box-shadow var(--t, .15s) var(--ease, ease);
+}
+.cl-select:focus, .cl-input:focus, .cl-textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-mist, rgba(8,102,255,.15));
+}
+.cl-textarea { resize: vertical; line-height: 1.5; min-height: 112px; }
+
+.cl-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font: inherit;
+  /* Shared button base for /cover-letters and /jobs — uses the standard md
+     button scale (Stage 1, bug #5). */
+  font-size: var(--btn-md-font, 12px);
+  font-weight: 500;
+  color: var(--text);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: var(--btn-md-pad, 8px 14px);
+  cursor: pointer;
+  transition: background var(--t, .15s) var(--ease, ease), border-color var(--t, .15s) var(--ease, ease);
+}
+.cl-btn:hover { background: var(--bg-hover); }
+.cl-btn:disabled { opacity: .55; cursor: progress; }
+.cl-btn-primary {
+  margin-top: 0;
+  width: 100%;
+  justify-content: center;
+  color: var(--accent-fg, #fff);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.cl-btn-primary:hover { background: var(--accent-hover, var(--accent)); }
+
+.cl-feedback {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  border: 1px solid var(--border);
+}
+.cl-feedback-info  { background: var(--bg-elevated); color: var(--text-muted); }
+.cl-feedback-ok    { background: var(--success-soft, rgba(21,128,61,.1)); border-color: var(--success); color: var(--success); }
+.cl-feedback-error { background: var(--danger-soft, rgba(220,38,38,.1)); border-color: var(--danger); color: var(--danger); }
+.cl-feedback strong { font-weight: 700; }
+
+.cl-divider { border: none; border-top: 1px solid var(--border); margin: 22px 0 16px; }
+.cl-primary-actions,
+.jb-primary-actions,
+.tl-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 4;
+  display: flex;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 10px 0 0;
+  background: linear-gradient(180deg, transparent, var(--bg-surface) 34%);
+}
+.cl-primary-actions,
+.jb-primary-actions {
+  flex-direction: column;
+}
+.cl-primary-actions .cl-feedback {
+  margin-top: 0;
+}
+.cl-form-pane .cl-library-panel {
+  margin-top: 18px;
+}
+.cl-library-panel {
+  margin: 0 0 20px;
+  padding: 13px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-elevated);
+}
+
+.cl-list { display: flex; flex-direction: column; gap: 4px; }
+.cl-empty { font-size: 12.5px; margin: 0; }
+
+/* First-load skeleton — shimmer rows so the library doesn't flash an empty
+   "no documents" message before /api/documents resolves. */
+.cl-list-skeleton { display: flex; flex-direction: column; gap: 6px; }
+.cl-skel-row {
+  height: 34px;
+  border-radius: 8px;
+  background: linear-gradient(
+    90deg,
+    var(--border-faint) 0%,
+    var(--border) 50%,
+    var(--border-faint) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.6s ease-in-out infinite;
+}
+
+.cl-list-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 8px;
+}
+.cl-list-row:hover { background: var(--bg-hover); }
+.cl-list-open {
+  flex: 1 1 auto;
+  text-align: left;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: none;
+  border: none;
+  padding: 7px 9px;
+  border-radius: 8px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cl-list-del {
+  flex: 0 0 auto;
+  background: none;
+  border: none;
+  color: var(--text-faint);
+  padding: 6px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.cl-list-del:hover { color: var(--danger); background: var(--danger-soft, rgba(220,38,38,.1)); }
+
+/* ── Unified document library (Stage 7) ──────────────────────────────────── */
+.cl-lib-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.cl-lib-head .cl-h3 { margin: 0; }
+
+/* Type-filter chips (All / CVs / Cover letters) — theme-aware tokens. */
+.cl-chips { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+.cl-chip {
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text-muted);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 10px;
+  cursor: pointer;
+  transition: color var(--t, .15s) var(--ease, ease),
+    border-color var(--t, .15s) var(--ease, ease),
+    background var(--t, .15s) var(--ease, ease);
+}
+.cl-chip:hover { color: var(--text); border-color: var(--border-strong, var(--border)); }
+.cl-chip.is-active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft, var(--bg-elevated));
+}
+.cl-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* A library row carries a stacked badge+name+sub-line, so it needs height. */
+.cl-lib-row { align-items: stretch; }
+.cl-lib-open {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  white-space: normal;
+  padding: 8px 9px;
+}
+.cl-lib-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cl-lib-sub {
+  flex-basis: 100%;
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+.cl-lib-meta {
+  flex: 1 0 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.cl-lib-meta-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 18px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text-faint);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+/* Document-type badge (CV vs Cover letter) — distinct accents, both modes. */
+.cl-badge {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+}
+.cl-badge-cv {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft, transparent);
+}
+.cl-badge-cover {
+  color: var(--success);
+  border-color: var(--success);
+  background: var(--success-soft, transparent);
+}
+
+/* PDF download button in a library row (mirrors the delete button chrome). */
+.cl-list-pdf {
+  flex: 0 0 auto;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  padding: 6px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.cl-list-pdf:hover { color: var(--accent); background: var(--accent-soft, var(--bg-hover)); }
+
+.cl-result-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.cl-result-title-stack {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.cl-result-name { font-size: 14px; font-weight: 600; }
+.cl-letter-meta {
+  min-height: 15px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+}
+.cl-result-actions { display: inline-flex; gap: 8px; }
+.cl-packet-lineage {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-surface);
+  font-size: 11.5px;
+  min-width: 0;
+}
+.cl-packet-lineage[hidden] { display: none; }
+.cl-packet-row,
+.cl-packet-evidence {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  align-items: center;
+  min-width: 0;
+}
+.cl-packet-chip,
+.cl-packet-id,
+.cl-packet-job {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  max-width: 100%;
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.cl-packet-job { color: var(--accent); text-decoration: none; }
+.cl-packet-evidence {
+  margin: 0;
+  align-items: stretch;
+}
+.cl-packet-evidence div {
+  display: grid;
+  gap: 2px;
+  min-width: min(220px, 100%);
+}
+.cl-packet-evidence dt {
+  color: var(--text-faint);
+  font-weight: 700;
+  text-transform: uppercase;
+  font-size: 10px;
+}
+.cl-packet-evidence dd {
+  margin: 0;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.cl-body {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 420px;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.65;
+  color: var(--text);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 18px 20px;
+  resize: none;
+  scroll-margin: 12px 0;
+}
+.cl-body:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-mist, rgba(8,102,255,.15));
+}
+.cl-preview {
+  width: 100%;
+  min-height: 420px;
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #fff;
+}
+.cl-result-foot { margin-top: 10px; font-size: 12px; text-align: right; }
+
+@media (max-width: 840px) {
+  .cl-main {
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    scroll-padding-block: 12px;
+  }
+  .cl-pane {
+    flex: 0 0 auto;
+    overflow: visible;
+  }
+  .cl-form-pane,
+  .jb-catalog-pane {
+    grid-column: 1;
+    grid-row: 2;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+  .cl-result-pane {
+    grid-column: 1;
+    grid-row: 3;
+    flex: 0 0 auto;
+    min-height: 360px;
+  }
+  .cl-body {
+    min-height: 200px;
+  }
+}
+
+/* Topbar gets crowded on narrow screens — shed chrome progressively. The ⌘K
+   palette stays reachable throughout, so collapsing the inline nav is safe. */
+@media (max-width: 1120px) {
+  /* Keep the icons, drop the text labels on the primary nav links. */
+  .cl-nav .cl-back span:not([data-icon]),
+  .cl-utility-nav .cl-back span:not([data-icon]) { display: none; }
+  .cl-nav .cl-back {
+    width: 40px;
+    min-width: 40px;
+    min-height: 40px;
+    padding: 0;
+    justify-content: center;
+  }
+  .cl-utility-nav .cl-back {
+    width: 40px;
+    min-width: 40px;
+    min-height: 40px;
+    padding: 0;
+    justify-content: center;
+  }
+}
+@media (max-width: 840px) {
+  .cl-topbar {
+    gap: 8px;
+    padding: 0 8px;
+  }
+  .cl-topbar > .cl-back {
+    min-height: 40px;
+  }
+  .cl-topbar-right > .lang-toggle,
+  .cl-topbar-right > .cmdk-trigger,
+  .cl-topbar-right > #theme-toggle,
+  .cl-topbar-right .ac-topbar-extra {
+    display: none !important;
+  }
+  .mobile-utility-btn {
+    display: inline-flex;
+    width: 40px;
+    min-width: 40px;
+    height: 40px;
+    min-height: 40px;
+  }
+  .cl-topbar-right > #logout-btn,
+  .cl-topbar-right > .icon-btn {
+    width: 40px;
+    min-width: 40px;
+    height: 40px;
+    min-height: 40px;
+    padding: 0;
+  }
+  .cl-btn {
+    min-height: 40px;
+  }
+}
+@media (max-width: 760px) {
+  .cl-topbar {
+    gap: 8px;
+    padding: 0 8px;
+  }
+  .cl-topbar > .cl-back {
+    width: 40px;
+    max-width: 40px;
+    min-width: 40px;
+    min-height: 40px;
+    padding-inline: 0;
+    justify-content: center;
+  }
+  .cl-topbar > .cl-back span:not([data-icon]) { display: none; }
+  .cl-title {
+    width: auto;
+    max-width: none;
+    min-width: 0;
+    flex: 1 1 auto;
+    overflow: visible;
+  }
+  .cl-result-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .cl-result-actions {
+    flex-wrap: wrap;
+  }
+  .cl-body {
+    min-height: 160px;
+    padding: 14px 15px;
+  }
+  .cl-title span:not([data-icon]) {
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    line-height: 1.12;
+  }
+  .cl-nav,
+  .cl-utility-nav { display: none; }
+  .cl-credit { display: none; }
+  .cl-topbar-right {
+    flex: 0 0 auto;
+    gap: 4px;
+  }
+  .cl-topbar-right > .lang-toggle,
+  .cl-topbar-right > .cmdk-trigger,
+  .cl-topbar-right > #theme-toggle {
+    display: none !important;
+  }
+  .tool-page-head {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px 14px;
+  }
+  .tool-page-title { font-size: 17px; }
+  .tool-page-status { justify-content: flex-start; }
+  .cl-pane { padding: 18px 14px; }
+  .cl-primary-actions,
+  .jb-primary-actions,
+  .tl-actions {
+    margin-left: -2px;
+    margin-right: -2px;
+    padding-bottom: 2px;
+    padding-bottom: max(10px, env(safe-area-inset-bottom));
+  }
+}
+
+.cl-job-warning { color: var(--danger); margin: 4px 0 10px; }
+.cl-job-warning[hidden] { display: none; }
+#cl-job-empty { margin: 4px 0 10px; }

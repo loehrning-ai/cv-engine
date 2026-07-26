@@ -1,0 +1,893 @@
+# CV Copilot — deploy to a single VPS over SSH (Stage 9 scaffold).
+#
+# TEMPLATE — DO NOT enable until the operator has a host and a protected
+# `production` GitHub Environment. Restrict that environment to `main`, require
+# an independent reviewer, prevent self-review, and store all values listed
+# below as environment secrets. Do not use repository-level production secrets.
+# This workflow is manual-only (workflow_dispatch), so it never runs on push.
+#
+# What it does: verifies a clean checkout, builds and scans both images on the
+# runner, transfers that exact image archive to the VPS, writes a .env from
+# protected production-environment secrets, then starts the content-addressed
+# image IDs with builds and pulls disabled. See DEPLOY.md for the full operator
+# runbook.
+#
+# Required `production` environment secrets
+# (Settings → Environments → production → Environment secrets):
+#   SSH_HOST              VPS IP / hostname
+#   SSH_USER             deploy user (e.g. deploy)
+#   SSH_PRIVATE_KEY       private key authorised on the VPS
+#   SSH_KNOWN_HOSTS       verified known_hosts line for SSH_HOST
+#   ONEPAGER_DOMAIN       public domain (Caddy cert)
+#   ACME_EMAIL            Let's Encrypt contact email
+#   PUBLIC_BASE_URL       https://<domain>
+#   SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, SUPABASE_JWKS_URL,
+#     SUPABASE_SERVICE_ROLE_KEY
+#   ONEPAGER_RLS_SUPABASE_URL, ONEPAGER_RLS_SUPABASE_PUBLISHABLE_KEY,
+#     ONEPAGER_RLS_SUPABASE_JWKS_URL,
+#     ONEPAGER_RLS_USER_A_JWT, ONEPAGER_RLS_USER_A_ID,
+#     ONEPAGER_RLS_USER_B_JWT, ONEPAGER_RLS_USER_B_ID
+#   ANTHROPIC_API_KEY     operator key for the free managed-credit generations
+#   ONEPAGER_KEK          platform key-encryption key (BYO-key envelope)
+#   ONEPAGER_REVIEW_TOKEN_SECRET reviewed-apply token signing secret
+#   FLASK_SECRET_KEY      fallback reviewed-apply token signing secret
+#   ONEPAGER_PRIVACY_CONTACT monitored data-controller email
+#   R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET
+#                         optional object storage; set all four or none
+#   ONEPAGER_R2_NEVER_USED set to 1 only when this deployment has never used R2
+#   POSTHOG_KEY           (optional) analytics; omit to keep analytics a no-op
+#   POSTHOG_HOST, ONEPAGER_ATS_RUBRIC, ONEPAGER_JOB_URL_ALLOWLIST,
+#     ONEPAGER_JOB_URL_RATE_LIMIT_PER_MINUTE, LINKEDIN_APPROVED_*,
+#     ONEPAGER_*_MODEL(S) optional operator controls; omit for defaults
+name: deploy
+
+on:
+  workflow_dispatch: {} # manual only — never auto-runs
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify release
+    runs-on: ubuntu-24.04
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Install Python dependencies
+        run: |
+          python3 -m venv .venv-app
+          . .venv-app/bin/activate
+          python -m pip install --disable-pip-version-check --require-hashes -r requirements.lock
+          deactivate
+          python3 -m venv .venv-audit
+          . .venv-audit/bin/activate
+          python -m pip install --disable-pip-version-check --require-hashes -r requirements-audit.lock
+
+      - name: Static and unit gates
+        run: |
+          . .venv-app/bin/activate
+          python -m pip check
+          .venv-audit/bin/python -m pip_audit -r requirements.lock
+          .venv-audit/bin/ruff check engine tools tests
+          .venv-audit/bin/bandit -q -lll -r engine tools
+          python -m compileall -q engine tools tests
+          find tools/editor/static -type f -name '*.js' -print0 \
+            | sort -z \
+            | xargs -0 -n1 node --check
+          python -m pytest \
+            tests/test_account_purge_worker.py \
+            tests/test_container_hardening.py \
+            tests/test_hygiene_supplychain.py \
+            tests/test_hardening_web.py \
+            tests/test_stage8_pdf_store.py \
+            tests/test_stage8_i18n_hardening.py \
+            tests/test_ui_static_contracts.py \
+            tests/test_live_rls_gate.py \
+            tests/test_render_matrix_gate.py \
+            tests/test_rendering_editor_hardening.py \
+            tests/test_stage10_account.py \
+            tests/test_stage7_jobs.py \
+            tests/test_application_apply.py \
+            -q
+          python engine/build.py
+
+      - name: Live RLS token gate
+        env:
+          ONEPAGER_LIVE_RLS_REQUIRED: "1"
+          ONEPAGER_RLS_SUPABASE_URL: ${{ secrets.ONEPAGER_RLS_SUPABASE_URL }}
+          ONEPAGER_RLS_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.ONEPAGER_RLS_SUPABASE_PUBLISHABLE_KEY }}
+          ONEPAGER_RLS_SUPABASE_JWKS_URL: ${{ secrets.ONEPAGER_RLS_SUPABASE_JWKS_URL }}
+          ONEPAGER_RLS_USER_A_JWT: ${{ secrets.ONEPAGER_RLS_USER_A_JWT }}
+          ONEPAGER_RLS_USER_A_ID: ${{ secrets.ONEPAGER_RLS_USER_A_ID }}
+          ONEPAGER_RLS_USER_B_JWT: ${{ secrets.ONEPAGER_RLS_USER_B_JWT }}
+          ONEPAGER_RLS_USER_B_ID: ${{ secrets.ONEPAGER_RLS_USER_B_ID }}
+        run: |
+          . .venv-app/bin/activate
+          python tools/ci/live_rls_gate.py
+
+      - name: Auth bootstrap browser gate
+        run: |
+          . .venv-app/bin/activate
+          python -m pip install --disable-pip-version-check --require-hashes -r requirements-browser.lock
+          python -m playwright install --with-deps chromium
+          ONEPAGER_DEMO_MODE=true python tools/editor/server.py > /tmp/onepager-auth-bootstrap.log 2>&1 &
+          server_pid="$!"
+          cleanup() {
+            kill "$server_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          for _ in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:5567/healthz >/dev/null; then
+              break
+            fi
+            sleep 0.5
+          done
+          curl -fsS http://127.0.0.1:5567/healthz
+          ONEPAGER_E2E_BASE_URL=http://127.0.0.1:5567 python -m pytest tests/e2e/test_auth_bootstrap_contracts.py -q
+          ONEPAGER_E2E_BASE_URL=http://127.0.0.1:5567 python -m pytest tests/e2e/test_layout_contracts.py::test_rendered_cv_raster_matrix_has_pixels_and_one_page_geometry -q
+
+      - name: Build and verify hardened containers
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose --profile prod config --quiet
+          docker compose --profile prod build --pull app caddy
+          release_app_id="$(
+            docker image inspect onepager:dev --format '{{.Id}}'
+          )"
+          release_caddy_id="$(
+            docker image inspect onepager-caddy:2.11.4 --format '{{.Id}}'
+          )"
+          release_config="$(
+            ONEPAGER_APP_IMAGE="$release_app_id" \
+            ONEPAGER_CADDY_IMAGE="$release_caddy_id" \
+              docker compose \
+                -f docker-compose.yml \
+                -f docker-compose.release.yml \
+                --profile prod \
+                config
+          )"
+          if grep -Eq '^[[:space:]]+build:' <<<"$release_config"; then
+            echo "Production Compose config retained a build fallback" >&2
+            exit 1
+          fi
+          test "$(
+            grep -c 'pull_policy: never' <<<"$release_config"
+          )" = "3"
+          test "$(
+            sed -n 's/^[[:space:]]*image: //p' <<<"$release_config" \
+              | sort -u
+          )" = "$(
+            printf '%s\n' \
+              "$release_app_id" \
+              "$release_caddy_id" \
+              | sort -u
+          )"
+          export ONEPAGER_APP_IMAGE="$release_app_id"
+          export ONEPAGER_CADDY_IMAGE="$release_caddy_id"
+          export COMPOSE_FILE="docker-compose.yml:docker-compose.release.yml"
+
+          test "$(
+            docker run --rm --read-only --tmpfs /tmp \
+              --entrypoint python3.13 onepager:dev --version
+          )" = "Python 3.13.14"
+          test "$(
+            docker run --rm --entrypoint /bin/busybox onepager:dev id -u
+          )" = "999"
+          docker run --rm --read-only --tmpfs /tmp \
+            --entrypoint python3.13 onepager:dev \
+            -c 'import sqlite3; from weasyprint import HTML; pdf = HTML(string="<h1>Wolfi render gate</h1>").write_pdf(); assert sqlite3.sqlite_version == "3.53.3"; assert pdf[:4] == b"%PDF"'
+
+          caddy_version="$(
+            docker run --rm --entrypoint /usr/bin/caddy \
+              onepager-caddy:2.11.4 version
+          )"
+          test "${caddy_version%% *}" = "v2.11.4"
+          test "$(
+            docker run --rm --entrypoint /bin/busybox \
+              onepager-caddy:2.11.4 id -u
+          )" = "65532"
+          docker run --rm --entrypoint /bin/busybox \
+            onepager-caddy:2.11.4 \
+            cat /usr/share/onepager/caddy-build-modules.txt \
+            | grep -Fqx 'github.com/caddyserver/caddy/v2 v2.11.4'
+          docker run --rm --entrypoint /bin/busybox \
+            onepager-caddy:2.11.4 \
+            cat /usr/share/onepager/caddy-build-modules.txt \
+            | grep -Fqx 'google.golang.org/grpc v1.82.1'
+          docker run --rm --entrypoint /bin/busybox \
+            onepager-caddy:2.11.4 \
+            cat /usr/share/onepager/caddy-build-info.txt \
+            | grep -Fq '/tmp/caddy: go1.26.5'
+          if docker run --rm --entrypoint /bin/sh onepager-caddy:2.11.4 \
+            -c 'command -v curl >/dev/null'; then
+            echo "Caddy runtime unexpectedly contains curl" >&2
+            exit 1
+          fi
+          ONEPAGER_DOMAIN=http://localhost ACME_EMAIL=security@example.invalid \
+            docker compose --profile prod run --rm --no-deps caddy \
+              validate --config /etc/caddy/Caddyfile --adapter caddyfile
+
+          cleanup_containers() {
+            docker compose --profile prod rm -sf app caddy >/dev/null 2>&1 || true
+          }
+          trap cleanup_containers EXIT
+          ONEPAGER_DOMAIN=http://localhost ACME_EMAIL=security@example.invalid \
+            docker compose --profile prod up -d --no-build --no-deps app caddy
+          for _attempt in $(seq 1 60); do
+            if curl -fsS -H 'Host: localhost' \
+              http://127.0.0.1/healthz >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS -H 'Host: localhost' http://127.0.0.1/healthz
+
+      - name: Reject critical or high CVEs in release images
+        shell: bash
+        run: bash tools/ci/scan_container_images.sh
+
+      - name: Retain actionable container CVE reports
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: container-cve-reports-${{ github.sha }}
+          path: trivy-reports/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Package scanned images with immutable evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -d -m 0700 release-images
+
+          for image in onepager:dev onepager-caddy:2.11.4; do
+            if docker image inspect "$image" \
+              --format '{{range .Config.Env}}{{println .}}{{end}}' \
+              | grep -E -i \
+                '(^|_)(API_KEY|TOKEN|PASSWORD|SECRET|PRIVATE_KEY|SERVICE_ROLE|KEK)='; then
+              echo "Runtime secret-like environment variable baked into $image" >&2
+              exit 1
+            fi
+            if docker history --no-trunc --format '{{.CreatedBy}}' "$image" \
+              | grep -E -i \
+                '(API_KEY|TOKEN|PASSWORD|SECRET|PRIVATE_KEY|SERVICE_ROLE|KEK)=[^[:space:]]+'; then
+              echo "Build-time credential material found in $image history" >&2
+              exit 1
+            fi
+          done
+          docker run --rm --entrypoint /bin/sh onepager:dev -c '
+            set -eu
+            for forbidden in \
+              /app/.env \
+              /app/.env.local \
+              /app/content/cv.yaml \
+              /app/.git \
+              /app/.claude \
+              /app/.ruff_cache \
+              /app/.mypy_cache \
+              /app/htmlcov \
+              /app/artifacts \
+              /app/CLAUDE.md \
+              /app/AGENTS.md \
+              /app/plans; do
+              test ! -e "$forbidden"
+            done
+            test -z "$(
+              find /app/design/photos -mindepth 1 -print -quit
+            )"
+            test -z "$(
+              find /app/tests/e2e/baselines \
+                -type f -name "*.actual.png" -print -quit
+            )"
+            test -z "$(
+              find /app -xdev -type f \
+                \( -name "*.pem" -o -name "*.p12" -o -name "*.pfx" \) \
+                -print -quit
+            )"
+          '
+
+          app_id="$(docker image inspect onepager:dev --format '{{.Id}}')"
+          caddy_id="$(
+            docker image inspect onepager-caddy:2.11.4 --format '{{.Id}}'
+          )"
+          for immutable_id in "$app_id" "$caddy_id"; do
+            [[ "$immutable_id" =~ ^sha256:[0-9a-f]{64}$ ]]
+          done
+
+          docker save \
+            --output release-images/onepager-images.tar \
+            onepager:dev \
+            onepager-caddy:2.11.4
+          archive_sha="$(
+            sha256sum release-images/onepager-images.tar | cut -d' ' -f1
+          )"
+          [[ "$archive_sha" =~ ^[0-9a-f]{64}$ ]]
+          printf '%s  %s\n' \
+            "$archive_sha" \
+            onepager-images.tar \
+            > release-images/onepager-images.tar.sha256
+          printf '%s\n' \
+            "git_sha=$GITHUB_SHA" \
+            "platform=linux/amd64" \
+            "archive_sha256=$archive_sha" \
+            "app_id=$app_id" \
+            "caddy_id=$caddy_id" \
+            > release-images/onepager-images.manifest
+
+      - name: Retain scanned images for this deploy only
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: onepager-images-${{ github.sha }}
+          path: release-images/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  deploy:
+    name: Deploy production
+    needs: verify
+    runs-on: ubuntu-24.04
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download scanned image artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: onepager-images-${{ github.sha }}
+          path: release-images
+
+      - name: Verify scanned image artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          (
+            cd release-images
+            sha256sum --check onepager-images.tar.sha256
+          )
+          test "$(
+            sed -n 's/^git_sha=//p' release-images/onepager-images.manifest
+          )" = "$GITHUB_SHA"
+          test "$(
+            sed -n 's/^platform=//p' release-images/onepager-images.manifest
+          )" = "linux/amd64"
+          docker load --input release-images/onepager-images.tar
+
+          expected_app_id="$(
+            sed -n 's/^app_id=//p' release-images/onepager-images.manifest
+          )"
+          expected_caddy_id="$(
+            sed -n 's/^caddy_id=//p' release-images/onepager-images.manifest
+          )"
+          for immutable_id in "$expected_app_id" "$expected_caddy_id"; do
+            [[ "$immutable_id" =~ ^sha256:[0-9a-f]{64}$ ]]
+          done
+          test "$(
+            docker image inspect onepager:dev --format '{{.Id}}'
+          )" = "$expected_app_id"
+          test "$(
+            docker image inspect onepager-caddy:2.11.4 --format '{{.Id}}'
+          )" = "$expected_caddy_id"
+
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          for key in SSH_PRIVATE_KEY SSH_KNOWN_HOSTS; do
+            if [ -z "${!key:-}" ]; then
+              echo "Missing required deploy secret: $key" >&2
+              exit 2
+            fi
+          done
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Deploy over SSH
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+          PUBLIC_BASE_URL: ${{ secrets.PUBLIC_BASE_URL }}
+          ONEPAGER_DOMAIN: ${{ secrets.ONEPAGER_DOMAIN }}
+          ACME_EMAIL: ${{ secrets.ACME_EMAIL }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
+          SUPABASE_JWKS_URL: ${{ secrets.SUPABASE_JWKS_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ONEPAGER_KEK: ${{ secrets.ONEPAGER_KEK }}
+          ONEPAGER_REVIEW_TOKEN_SECRET: ${{ secrets.ONEPAGER_REVIEW_TOKEN_SECRET }}
+          FLASK_SECRET_KEY: ${{ secrets.FLASK_SECRET_KEY }}
+          ONEPAGER_PRIVACY_CONTACT: ${{ secrets.ONEPAGER_PRIVACY_CONTACT }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          ONEPAGER_R2_NEVER_USED: ${{ secrets.ONEPAGER_R2_NEVER_USED }}
+          POSTHOG_KEY: ${{ secrets.POSTHOG_KEY }}
+          POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
+          ONEPAGER_ATS_RUBRIC: ${{ secrets.ONEPAGER_ATS_RUBRIC }}
+          ONEPAGER_ACCOUNT_PURGE_BATCH_SIZE: ${{ secrets.ONEPAGER_ACCOUNT_PURGE_BATCH_SIZE }}
+          ONEPAGER_ACCOUNT_PURGE_LEASE_MINUTES: ${{ secrets.ONEPAGER_ACCOUNT_PURGE_LEASE_MINUTES }}
+          ONEPAGER_ACCOUNT_PURGE_POLL_SECONDS: ${{ secrets.ONEPAGER_ACCOUNT_PURGE_POLL_SECONDS }}
+          ONEPAGER_JOB_URL_ALLOWLIST: ${{ secrets.ONEPAGER_JOB_URL_ALLOWLIST }}
+          ONEPAGER_JOB_URL_RATE_LIMIT_PER_MINUTE: ${{ secrets.ONEPAGER_JOB_URL_RATE_LIMIT_PER_MINUTE }}
+          ONEPAGER_LOCAL_JOBS_DB: ${{ secrets.ONEPAGER_LOCAL_JOBS_DB }}
+          ONEPAGER_LOCAL_JOBS_FRESH_DAYS: ${{ secrets.ONEPAGER_LOCAL_JOBS_FRESH_DAYS }}
+          ONEPAGER_EXTERNAL_APPLY_ENABLED: ${{ secrets.ONEPAGER_EXTERNAL_APPLY_ENABLED }}
+          ONEPAGER_EXTERNAL_APPLY_KILL_SWITCH: ${{ secrets.ONEPAGER_EXTERNAL_APPLY_KILL_SWITCH }}
+          ONEPAGER_EXTERNAL_APPLY_SAFE_FIXTURE_HOSTS: ${{ secrets.ONEPAGER_EXTERNAL_APPLY_SAFE_FIXTURE_HOSTS }}
+          LINKEDIN_APPROVED_ADAPTER_ENABLED: ${{ secrets.LINKEDIN_APPROVED_ADAPTER_ENABLED }}
+          LINKEDIN_PARTNER_CONFIG_ID: ${{ secrets.LINKEDIN_PARTNER_CONFIG_ID }}
+          ONEPAGER_OLLAMA_BASE_URL: ${{ secrets.ONEPAGER_OLLAMA_BASE_URL }}
+          ONEPAGER_OLLAMA_MODEL: ${{ secrets.ONEPAGER_OLLAMA_MODEL }}
+          ONEPAGER_OPENROUTER_MODEL: ${{ secrets.ONEPAGER_OPENROUTER_MODEL }}
+          ONEPAGER_DEEPSEEK_MODEL: ${{ secrets.ONEPAGER_DEEPSEEK_MODEL }}
+          ONEPAGER_GROQ_MODEL: ${{ secrets.ONEPAGER_GROQ_MODEL }}
+          ONEPAGER_MISTRAL_MODEL: ${{ secrets.ONEPAGER_MISTRAL_MODEL }}
+          ONEPAGER_OPENAI_COMPATIBLE_BASE_URL: ${{ secrets.ONEPAGER_OPENAI_COMPATIBLE_BASE_URL }}
+          ONEPAGER_OPENAI_COMPATIBLE_MODEL: ${{ secrets.ONEPAGER_OPENAI_COMPATIBLE_MODEL }}
+          ONEPAGER_ANTHROPIC_MODELS: ${{ secrets.ONEPAGER_ANTHROPIC_MODELS }}
+          ONEPAGER_GEMINI_MODELS: ${{ secrets.ONEPAGER_GEMINI_MODELS }}
+          ONEPAGER_OPENROUTER_MODELS: ${{ secrets.ONEPAGER_OPENROUTER_MODELS }}
+          ONEPAGER_DEEPSEEK_MODELS: ${{ secrets.ONEPAGER_DEEPSEEK_MODELS }}
+          ONEPAGER_GROQ_MODELS: ${{ secrets.ONEPAGER_GROQ_MODELS }}
+          ONEPAGER_MISTRAL_MODELS: ${{ secrets.ONEPAGER_MISTRAL_MODELS }}
+          ONEPAGER_OPENAI_COMPATIBLE_MODELS: ${{ secrets.ONEPAGER_OPENAI_COMPATIBLE_MODELS }}
+        run: |
+          set -euo pipefail
+          umask 077
+          release_archive="release-images/onepager-images.tar"
+          release_manifest="release-images/onepager-images.manifest"
+          test -s "$release_archive"
+          test -s "$release_manifest"
+          archive_sha="$(
+            sed -n 's/^archive_sha256=//p' "$release_manifest"
+          )"
+          expected_app_image_id="$(
+            sed -n 's/^app_id=//p' "$release_manifest"
+          )"
+          expected_caddy_image_id="$(
+            sed -n 's/^caddy_id=//p' "$release_manifest"
+          )"
+          [[ "$archive_sha" =~ ^[0-9a-f]{64}$ ]]
+          for immutable_id in \
+            "$expected_app_image_id" \
+            "$expected_caddy_image_id"; do
+            [[ "$immutable_id" =~ ^sha256:[0-9a-f]{64}$ ]]
+          done
+          tmp_env="$(mktemp)"
+          remote_env=""
+          remote_images=""
+          cleanup() {
+            rm -f "$tmp_env"
+            if { [ -n "${remote_env:-}" ] || [ -n "${remote_images:-}" ]; } \
+              && [ -n "${SSH_USER:-}" ] \
+              && [ -n "${SSH_HOST:-}" ]; then
+              ssh -o StrictHostKeyChecking=yes "$SSH_USER@$SSH_HOST" \
+                "REMOTE_ENV='$remote_env' REMOTE_IMAGES='$remote_images' bash -s" \
+                <<'REMOTE_CLEANUP' || true
+                set -euo pipefail
+                if [ -n "${REMOTE_ENV:-}" ]; then
+                  rm -f "$REMOTE_ENV"
+                fi
+                if [ -n "${REMOTE_IMAGES:-}" ]; then
+                  rm -f "$REMOTE_IMAGES"
+                fi
+                rm -rf "${APP_DIR:-/opt/onepager}.next"
+          REMOTE_CLEANUP
+            fi
+          }
+          trap cleanup EXIT
+          python3 - <<'PY' > "$tmp_env"
+          import os
+          import re
+          import sys
+          from urllib.parse import urlsplit
+
+          deploy_required = [
+              "SSH_HOST",
+              "SSH_USER",
+              "SSH_PRIVATE_KEY",
+              "SSH_KNOWN_HOSTS",
+          ]
+          app_required = [
+              "PUBLIC_BASE_URL",
+              "ONEPAGER_DOMAIN",
+              "ACME_EMAIL",
+              "SUPABASE_URL",
+              "SUPABASE_PUBLISHABLE_KEY",
+              "SUPABASE_JWKS_URL",
+              "SUPABASE_SERVICE_ROLE_KEY",
+              "ANTHROPIC_API_KEY",
+              "ONEPAGER_KEK",
+              "ONEPAGER_REVIEW_TOKEN_SECRET",
+              "FLASK_SECRET_KEY",
+              "ONEPAGER_PRIVACY_CONTACT",
+          ]
+          optional = [
+              "ONEPAGER_OLLAMA_BASE_URL",
+              "ONEPAGER_OLLAMA_MODEL",
+              "ONEPAGER_OPENROUTER_MODEL",
+              "ONEPAGER_DEEPSEEK_MODEL",
+              "ONEPAGER_GROQ_MODEL",
+              "ONEPAGER_MISTRAL_MODEL",
+              "ONEPAGER_OPENAI_COMPATIBLE_BASE_URL",
+              "ONEPAGER_OPENAI_COMPATIBLE_MODEL",
+              "ONEPAGER_ANTHROPIC_MODELS",
+              "ONEPAGER_GEMINI_MODELS",
+              "ONEPAGER_OPENROUTER_MODELS",
+              "ONEPAGER_DEEPSEEK_MODELS",
+              "ONEPAGER_GROQ_MODELS",
+              "ONEPAGER_MISTRAL_MODELS",
+              "ONEPAGER_OPENAI_COMPATIBLE_MODELS",
+              "ONEPAGER_JOB_URL_ALLOWLIST",
+              "ONEPAGER_JOB_URL_RATE_LIMIT_PER_MINUTE",
+              "ONEPAGER_LOCAL_JOBS_DB",
+              "ONEPAGER_LOCAL_JOBS_FRESH_DAYS",
+              "ONEPAGER_EXTERNAL_APPLY_ENABLED",
+              "ONEPAGER_EXTERNAL_APPLY_KILL_SWITCH",
+              "ONEPAGER_EXTERNAL_APPLY_SAFE_FIXTURE_HOSTS",
+              "LINKEDIN_APPROVED_ADAPTER_ENABLED",
+              "LINKEDIN_PARTNER_CONFIG_ID",
+              "R2_ACCOUNT_ID",
+              "R2_ACCESS_KEY_ID",
+              "R2_SECRET_ACCESS_KEY",
+              "R2_BUCKET",
+              "ONEPAGER_R2_NEVER_USED",
+              "POSTHOG_KEY",
+              "POSTHOG_HOST",
+              "ONEPAGER_ATS_RUBRIC",
+              "ONEPAGER_ACCOUNT_PURGE_BATCH_SIZE",
+              "ONEPAGER_ACCOUNT_PURGE_LEASE_MINUTES",
+              "ONEPAGER_ACCOUNT_PURGE_POLL_SECONDS",
+          ]
+          r2_keys = ["R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET"]
+
+          missing = [key for key in deploy_required + app_required if not os.environ.get(key, "").strip()]
+          public_base_url = os.environ.get("PUBLIC_BASE_URL", "").strip()
+          try:
+              parsed_public_url = urlsplit(public_base_url)
+              public_port = parsed_public_url.port
+          except ValueError:
+              parsed_public_url = None
+              public_port = None
+          if (
+              parsed_public_url is None
+              or parsed_public_url.scheme != "https"
+              or not parsed_public_url.hostname
+              or parsed_public_url.username is not None
+              or parsed_public_url.password is not None
+              or parsed_public_url.path not in {"", "/"}
+              or parsed_public_url.query
+              or parsed_public_url.fragment
+              or (public_port is not None and not 1 <= public_port <= 65535)
+              or not re.fullmatch(r"[A-Za-z0-9.-]+", parsed_public_url.hostname)
+          ):
+              missing.append("PUBLIC_BASE_URL must be a strict HTTPS origin")
+          r2_present = [key for key in r2_keys if os.environ.get(key, "").strip()]
+          r2_never_used = os.environ.get("ONEPAGER_R2_NEVER_USED", "").strip().lower() in {"1", "true", "yes"}
+          if r2_present and len(r2_present) != len(r2_keys):
+              missing.extend(key for key in r2_keys if key not in r2_present)
+          if not r2_present and not r2_never_used:
+              missing.append("R2 credentials or ONEPAGER_R2_NEVER_USED=1")
+          if len(r2_present) == len(r2_keys) and r2_never_used:
+              print("R2 credentials conflict with ONEPAGER_R2_NEVER_USED=1", file=sys.stderr)
+              sys.exit(2)
+          if missing:
+              print("Missing required deploy secrets: " + ", ".join(sorted(set(missing))), file=sys.stderr)
+              sys.exit(2)
+
+          def quote(value: str) -> str:
+              value = value.replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
+              return f'"{value}"'
+
+          for key in app_required + optional:
+              print(f"{key}={quote(os.environ.get(key, ''))}")
+          PY
+
+          remote_env="$(
+            ssh -o StrictHostKeyChecking=yes "$SSH_USER@$SSH_HOST" \
+              'umask 077; mktemp /tmp/onepager-env.XXXXXX'
+          )"
+          remote_images="$(
+            ssh -o StrictHostKeyChecking=yes "$SSH_USER@$SSH_HOST" \
+              'umask 077; mktemp /tmp/onepager-images.XXXXXX'
+          )"
+          ssh -o StrictHostKeyChecking=yes "$SSH_USER@$SSH_HOST" '
+            set -euo pipefail
+            APP_DIR="${APP_DIR:-/opt/onepager}"
+            NEXT_DIR="${APP_DIR}.next"
+            rm -rf "$NEXT_DIR"
+            mkdir -p "$NEXT_DIR"
+          '
+          git archive --worktree-attributes --format=tar HEAD \
+            | ssh -o StrictHostKeyChecking=yes "$SSH_USER@$SSH_HOST" 'tar -xf - -C "${APP_DIR:-/opt/onepager}.next"'
+          scp -o StrictHostKeyChecking=yes "$tmp_env" "$SSH_USER@$SSH_HOST:$remote_env"
+          scp -o StrictHostKeyChecking=yes \
+            "$release_archive" \
+            "$SSH_USER@$SSH_HOST:$remote_images"
+          ssh -o StrictHostKeyChecking=yes "$SSH_USER@$SSH_HOST" \
+            "REMOTE_ENV='$remote_env' REMOTE_IMAGES='$remote_images' EXPECTED_IMAGE_ARCHIVE_SHA='$archive_sha' EXPECTED_APP_IMAGE_ID='$expected_app_image_id' EXPECTED_CADDY_IMAGE_ID='$expected_caddy_image_id' bash -s" \
+            <<'REMOTE'
+            set -euo pipefail
+            umask 077
+            APP_DIR="${APP_DIR:-/opt/onepager}"
+            NEXT_DIR="${APP_DIR}.next"
+            PREV_DIR="${APP_DIR}.previous"
+            SWAP_STARTED=0
+            ERASURE_CANDIDATE_READY=0
+            PREVIOUS_APP_IMAGE_ID=""
+            PREVIOUS_CADDY_IMAGE_ID=""
+            previous_app_container="$(
+              docker ps -q \
+                --filter 'label=com.docker.compose.project=onepager' \
+                --filter 'label=com.docker.compose.service=app' \
+                | head -n 1
+            )"
+            previous_caddy_container="$(
+              docker ps -q \
+                --filter 'label=com.docker.compose.project=onepager' \
+                --filter 'label=com.docker.compose.service=caddy' \
+                | head -n 1
+            )"
+            if [ -n "$previous_app_container" ]; then
+              PREVIOUS_APP_IMAGE_ID="$(
+                docker inspect --format '{{.Image}}' "$previous_app_container"
+              )"
+            fi
+            if [ -n "$previous_caddy_container" ]; then
+              PREVIOUS_CADDY_IMAGE_ID="$(
+                docker inspect --format '{{.Image}}' "$previous_caddy_container"
+              )"
+            fi
+            for prior_image_id in \
+              "$PREVIOUS_APP_IMAGE_ID" \
+              "$PREVIOUS_CADDY_IMAGE_ID"; do
+              if [ -n "$prior_image_id" ]; then
+                [[ "$prior_image_id" =~ ^sha256:[0-9a-f]{64}$ ]]
+              fi
+            done
+
+            test "$(
+              sha256sum "$REMOTE_IMAGES" | cut -d' ' -f1
+            )" = "$EXPECTED_IMAGE_ARCHIVE_SHA"
+            docker load --input "$REMOTE_IMAGES"
+            rm -f "$REMOTE_IMAGES"
+            test "$(
+              docker image inspect onepager:dev --format '{{.Id}}'
+            )" = "$EXPECTED_APP_IMAGE_ID"
+            test "$(
+              docker image inspect onepager-caddy:2.11.4 --format '{{.Id}}'
+            )" = "$EXPECTED_CADDY_IMAGE_ID"
+            export ONEPAGER_APP_IMAGE="$EXPECTED_APP_IMAGE_ID"
+            export ONEPAGER_CADDY_IMAGE="$EXPECTED_CADDY_IMAGE_ID"
+
+            wait_for_healthy_worker() {
+              worker_id="$1"
+              worker_health=""
+              for _attempt in $(seq 1 90); do
+                worker_health="$(docker inspect --format '{{.State.Health.Status}}' "$worker_id")"
+                if [ "$worker_health" = "healthy" ]; then
+                  break
+                fi
+                if [ "$worker_health" = "unhealthy" ]; then
+                  return 1
+                fi
+                sleep 2
+              done
+              test "$worker_health" = "healthy"
+            }
+            assert_release_service_image() {
+              service="$1"
+              expected_image_id="$2"
+              service_id="$(
+                docker compose -p onepager --profile prod ps -q "$service"
+              )"
+              test -n "$service_id"
+              test "$(
+                docker inspect --format '{{.Image}}' "$service_id"
+              )" = "$expected_image_id"
+            }
+            verify_stack() {
+              assert_release_service_image app "$EXPECTED_APP_IMAGE_ID"
+              assert_release_service_image purge-worker "$EXPECTED_APP_IMAGE_ID"
+              assert_release_service_image caddy "$EXPECTED_CADDY_IMAGE_ID"
+              curl -fsS "$PUBLIC_BASE_URL/healthz"
+              worker_id="$(
+                docker compose -p onepager --profile prod ps -q purge-worker 2>/dev/null \
+                  || true
+              )"
+              if [ -z "$worker_id" ]; then
+                worker_id="$(
+                  docker ps -q \
+                    --filter 'name=^/onepager-erasure-candidate$'
+                )"
+              fi
+              if [ -z "$worker_id" ]; then
+                worker_id="$(
+                  docker ps -q \
+                    --filter 'name=^/onepager-erasure-keeper$'
+                )"
+              fi
+              test -n "$worker_id"
+              wait_for_healthy_worker "$worker_id"
+            }
+            cleanup_and_restore_on_failure() {
+              status="$1"
+              set +e
+              if [ "${ERASURE_CANDIDATE_READY:-0}" != "1" ]; then
+                docker rm -f onepager-erasure-candidate >/dev/null 2>&1 || true
+              fi
+              rm -f "$REMOTE_ENV" "$REMOTE_IMAGES"
+              if [ -d "$NEXT_DIR" ]; then
+                rm -f "$NEXT_DIR/.env" "$NEXT_DIR/.env.docker"
+              fi
+              if [ "$status" -ne 0 ] && [ "${SWAP_STARTED:-0}" = "1" ]; then
+                cd /
+                rm -rf "${APP_DIR}.failed"
+                if [ -d "$APP_DIR" ]; then
+                  mv "$APP_DIR" "${APP_DIR}.failed"
+                fi
+                if [ -d "$PREV_DIR" ]; then
+                  mv "$PREV_DIR" "$APP_DIR"
+                  cd "$APP_DIR"
+                  if [ -n "$PREVIOUS_APP_IMAGE_ID" ]; then
+                    docker tag "$PREVIOUS_APP_IMAGE_ID" onepager:dev
+                    export ONEPAGER_APP_IMAGE="$PREVIOUS_APP_IMAGE_ID"
+                  fi
+                  if [ -n "$PREVIOUS_CADDY_IMAGE_ID" ]; then
+                    docker tag \
+                      "$PREVIOUS_CADDY_IMAGE_ID" \
+                      onepager-caddy:2.11.4
+                    export ONEPAGER_CADDY_IMAGE="$PREVIOUS_CADDY_IMAGE_ID"
+                  fi
+                  unset COMPOSE_FILE
+                  docker compose -p onepager --profile prod --env-file .env \
+                    up -d --no-build --pull never --remove-orphans
+                  curl -fsS "$PUBLIC_BASE_URL/healthz"
+                fi
+              fi
+            }
+            trap 'status=$?; cleanup_and_restore_on_failure "$status"; exit "$status"' EXIT
+            chmod 600 "$REMOTE_ENV"
+            mv "$REMOTE_ENV" "$NEXT_DIR/.env"
+            test -s "$NEXT_DIR/.env"
+            PUBLIC_BASE_URL="$(
+              python3 "$NEXT_DIR/tools/ci/compose_env_to_docker.py" \
+                --get "$NEXT_DIR/.env" PUBLIC_BASE_URL
+            )"
+            test -n "$PUBLIC_BASE_URL"
+
+            cd "$NEXT_DIR"
+            export COMPOSE_FILE="docker-compose.yml:docker-compose.release.yml"
+            docker compose -p onepager --profile prod --env-file .env config --quiet
+            if docker compose -p onepager --profile prod --env-file .env config \
+              | grep -Eq '^[[:space:]]+build:'; then
+              echo "Production Compose config retained a build fallback" >&2
+              exit 1
+            fi
+            release_images="$(
+              docker compose -p onepager --profile prod --env-file .env \
+                config --images \
+                | sort -u
+            )"
+            expected_release_images="$(
+              printf '%s\n' \
+                "$ONEPAGER_APP_IMAGE" \
+                "$ONEPAGER_CADDY_IMAGE" \
+                | sort -u
+            )"
+            test "$release_images" = "$expected_release_images"
+            test "$(
+              docker compose -p onepager --profile prod --env-file .env config \
+                | grep -c 'pull_policy: never'
+            )" = "3"
+            python3 tools/ci/compose_env_to_docker.py \
+              "$NEXT_DIR/.env" \
+              "$NEXT_DIR/.env.docker"
+            candidate_image="$(
+              docker image inspect onepager:dev --format '{{.Id}}'
+            )"
+            test "$candidate_image" = "$EXPECTED_APP_IMAGE_ID"
+            docker rm -f onepager-erasure-candidate >/dev/null 2>&1 || true
+            docker run -d \
+              --name onepager-erasure-candidate \
+              --env-file "$NEXT_DIR/.env.docker" \
+              --user 999:999 \
+              --read-only \
+              --cap-drop ALL \
+              --security-opt no-new-privileges \
+              --pids-limit 128 \
+              --init \
+              --tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m \
+              --volume onepager_onepager_photos:/app/design/photos \
+              --restart unless-stopped \
+              --health-cmd "python3 tools/editor/account_purge_worker.py --probe" \
+              --health-interval 60s \
+              --health-timeout 15s \
+              --health-retries 3 \
+              --health-start-period 20s \
+              "$EXPECTED_APP_IMAGE_ID" \
+              python3 tools/editor/account_purge_worker.py
+            rm -f "$NEXT_DIR/.env.docker"
+            candidate_id="$(
+              docker ps -q \
+                --filter 'name=^/onepager-erasure-candidate$'
+            )"
+            test -n "$candidate_id"
+            wait_for_healthy_worker "$candidate_id"
+            ERASURE_CANDIDATE_READY=1
+            cd /
+            SWAP_STARTED=1
+            rm -rf "$PREV_DIR"
+            if [ -d "$APP_DIR" ]; then
+              mv "$APP_DIR" "$PREV_DIR"
+            fi
+            mv "$NEXT_DIR" "$APP_DIR"
+
+            # Bring up the prod stack (app + erasure worker + Caddy) from the clean artifact.
+            cd "$APP_DIR"
+            printf '%s\n' \
+              "ONEPAGER_APP_IMAGE=\"$ONEPAGER_APP_IMAGE\"" \
+              "ONEPAGER_CADDY_IMAGE=\"$ONEPAGER_CADDY_IMAGE\"" \
+              'COMPOSE_FILE="docker-compose.yml:docker-compose.release.yml"' \
+              >> .env
+            # The retired official Caddy image wrote these named volumes as
+            # root. Migrate only their ownership immediately before the
+            # nonroot Caddy replacement starts; rollback images remain able to
+            # read the migrated files.
+            for caddy_volume in onepager_caddy_data onepager_caddy_config; do
+              docker volume create "$caddy_volume" >/dev/null
+              docker run --rm \
+                --user 0:0 \
+                --read-only \
+                --cap-drop ALL \
+                --cap-add CHOWN \
+                --security-opt no-new-privileges \
+                --volume "$caddy_volume:/mnt" \
+                --entrypoint /bin/busybox \
+                "$EXPECTED_CADDY_IMAGE_ID" \
+                chown -R 65532:65532 /mnt
+            done
+            test "$(
+              docker image inspect "$ONEPAGER_APP_IMAGE" --format '{{.Id}}'
+            )" = "$EXPECTED_APP_IMAGE_ID"
+            test "$(
+              docker image inspect "$ONEPAGER_CADDY_IMAGE" --format '{{.Id}}'
+            )" = "$EXPECTED_CADDY_IMAGE_ID"
+            docker compose -p onepager --profile prod --env-file .env \
+              up -d --no-build --pull never --remove-orphans
+            docker compose -p onepager ps
+            verify_stack
+            docker rm -f onepager-erasure-candidate >/dev/null 2>&1 || true
+            docker rm -f onepager-erasure-keeper >/dev/null 2>&1 || true
+            rm -f "$APP_DIR/.env.docker"
+          REMOTE
+          remote_env=""
+          remote_images=""

@@ -1,0 +1,114 @@
+# CV Copilot — container orchestration.
+#
+#   * `app`          — the gunicorn editor + API (always on).
+#   * `purge-worker` — service-role D+30 account erasure (production profile).
+#   * `caddy`        — auto-TLS reverse proxy (production profile).
+#
+# A plain `docker compose up` starts only `app`. Local production-profile
+# development can build the proxy and mandatory erasure worker with:
+#   docker compose --profile prod up -d --build
+# VPS releases must also load docker-compose.release.yml; that override removes
+# build definitions and requires scanned, image-ID-qualified references.
+services:
+  app:
+    build: .
+    image: ${ONEPAGER_APP_IMAGE:-onepager:dev}
+    pull_policy: never
+    user: "999:999"
+    # Bind app traffic to localhost; production traffic enters through Caddy/TLS.
+    ports:
+      - "127.0.0.1:8000:8000"
+    # .env is optional — the editor boots without it (AI features just degrade
+    # to the heuristic importer when ANTHROPIC_API_KEY is unset). required:false
+    # so `docker compose up` works on a fresh clone with no .env.
+    env_file:
+      - path: .env
+        required: false
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    init: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+      - /app/output:rw,noexec,nosuid,nodev,size=128m
+    volumes:
+      - onepager_photos:/app/design/photos
+    restart: unless-stopped
+
+  # PRODUCTION erasure worker. It atomically claims due accounts, removes their
+  # R2 prefix and exact photo-volume directory, then admin-hard-deletes the
+  # Supabase user so database cascades run. External cleanup errors fail closed
+  # and retry after the claim lease expires.
+  purge-worker:
+    image: ${ONEPAGER_APP_IMAGE:-onepager:dev}
+    pull_policy: never
+    user: "999:999"
+    profiles: ["prod"]
+    depends_on:
+      - app
+    command: ["python3", "tools/editor/account_purge_worker.py"]
+    env_file:
+      - path: .env
+        required: false
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    init: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+    volumes:
+      - onepager_photos:/app/design/photos
+    healthcheck:
+      test: ["CMD", "python3", "tools/editor/account_purge_worker.py", "--probe"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+
+  # PRODUCTION reverse proxy — only starts with `--profile prod`.
+  caddy:
+    build:
+      context: .
+      dockerfile: Dockerfile.caddy
+    image: ${ONEPAGER_CADDY_IMAGE:-onepager-caddy:2.11.4}
+    pull_policy: never
+    user: "65532:65532"
+    profiles: ["prod"]
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      # Set by the operator (or repo secrets via the deploy workflow):
+      #   ONEPAGER_DOMAIN — the public domain Caddy gets a cert for.
+      #   ACME_EMAIL      — Let's Encrypt contact email.
+      ONEPAGER_DOMAIN: ${ONEPAGER_DOMAIN:-localhost}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    init: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m
+    restart: unless-stopped
+
+volumes:
+  onepager_photos:
+  caddy_data:
+  caddy_config:

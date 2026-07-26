@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>CV Copilot · ATS score &amp; review</title>
+  <link rel="icon" href="/static/og-image.svg" type="image/svg+xml">
+  <!-- No-flash theme restore — render-blocking, before the stylesheets. -->
+  <script src="/static/theme-init.js"></script>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/cover-letters.css">
+  <link rel="stylesheet" href="/static/tailor.css">
+</head>
+<body>
+  <a class="skip-link" href="#tl-main" data-i18n="a11y.skipToContent">Skip to main content</a>
+  <div id="tl-app" class="cl-app">
+__CHROME_TOPBAR__
+
+    <main class="cl-main tl-main" id="tl-main" tabindex="-1">
+      <h1 class="sr-only" data-i18n="a11y.tailorHeading">Tailor &amp; ATS score</h1>
+      <!-- Left: tailor form -->
+      <section class="cl-pane cl-form-pane" aria-label="Score and review CV against a job" data-i18n-attr="aria-label:tailor.form_aria">
+        <h2 class="cl-h2" data-i18n="tailor.form.heading">Score and review a CV</h2>
+        <p class="cl-sub muted" data-i18n="tailor.form.intro">
+          Score how well one of your CVs already covers a job, then review a
+          reviewed copy that surfaces your most relevant, real experience. Your original CV
+          is never changed — applying reviewed output creates a new copy. Invented
+          skills, employers, or metrics are blocked, and the tailored CV is held
+          to one page.
+        </p>
+
+        <label class="cl-label" for="tl-cv" data-i18n="tailor.field.source_cv">Source CV</label>
+        <select id="tl-cv" class="cl-select" aria-label="Source CV" name="source_cv_id" autocomplete="off" data-i18n-attr="aria-label:tailor.field.source_cv"></select>
+
+        <label class="cl-label" for="tl-profile" data-i18n="tailor.field.profile">ATS score system</label>
+        <select id="tl-profile" class="cl-select" aria-label="ATS score system" name="ats_profile" autocomplete="off" data-i18n-attr="aria-label:tailor.field.profile">
+          <option value="keyword_screen" data-i18n="tailor.profile.keyword_screen">Keyword screen</option>
+          <option value="strict_requirements" data-i18n="tailor.profile.strict_requirements">Strict requirements</option>
+          <option value="semantic_fit" data-i18n="tailor.profile.semantic_fit">Semantic fit</option>
+        </select>
+        <p class="cl-sub muted tl-profile-note" data-i18n="tailor.profile.disclaimer">
+          CV Copilot score-system simulations only. No vendor-backed ATS certification.
+        </p>
+
+        <label class="cl-label" for="tl-job" data-i18n="tailor.field.saved_job">Saved job</label>
+        <select id="tl-job" class="cl-select" aria-label="Saved job" name="job_id" autocomplete="off" data-i18n-attr="aria-label:tailor.field.saved_job"></select>
+        <p id="tl-job-empty" class="cl-sub muted tl-job-empty" hidden></p>
+
+        <label class="cl-label" for="tl-jd" data-i18n="tailor.field.jd">Job description</label>
+        <textarea id="tl-jd" class="cl-textarea" rows="8" name="job_description" autocomplete="off"
+                  placeholder="Paste the full job posting here…" data-i18n-attr="placeholder:tailor.field.jd_placeholder"></textarea>
+        <div id="tl-selected-job-context" class="tl-selected-job-context" hidden></div>
+
+        <label class="cl-label" for="tl-jd-url" data-i18n="tailor.field.url">...or fetch from a URL (optional)</label>
+        <input id="tl-jd-url" class="cl-input" type="url" name="job_url" autocomplete="off"
+               placeholder="https://... (public job posting; paste text above wins)" data-i18n-attr="placeholder:tailor.field.url_placeholder" />
+        <p id="tl-url-disabled" class="cl-sub muted" hidden data-i18n="tailor.field.url_disabled">
+          URL fetch is disabled on this server — paste the posting text or use a saved job.
+        </p>
+
+        <div class="tl-actions">
+          <button id="tl-score" type="button" class="cl-btn">
+            <span data-icon="target" data-icon-size="14"></span>
+            <span class="tl-score-label" data-i18n="tailor.score.button">Score match (free)</span>
+          </button>
+          <button id="tl-tailor" type="button" class="cl-btn cl-btn-primary tl-tailor-btn" data-e2e="tailor-review">
+            <span data-icon="scissors" data-icon-size="14"></span>
+            <span class="tl-tailor-label" data-i18n="tailor.review.button">Review changes</span>
+          </button>
+        </div>
+
+        <div id="tl-feedback" class="cl-feedback" role="status" aria-live="polite" hidden></div>
+      </section>
+
+      <!-- Right: ATS score + gaps + matches -->
+      <section class="cl-pane cl-result-pane" aria-label="ATS match and gaps" data-i18n-attr="aria-label:tailor.result_aria">
+        <div id="tl-empty" class="tl-empty muted">
+          <span data-icon="target" data-icon-size="28"></span>
+          <p data-i18n="tailor.empty">
+             Score a match or tailor a copy to see your ATS keyword coverage and
+             the requirements your CV doesn't yet evidence.</p>
+        </div>
+
+        <!-- Loading skeleton — shown while a score/tailor request is in flight. -->
+        <div id="tl-loading" class="tl-loading" role="status" aria-live="polite" hidden>
+          <span class="tl-spinner" aria-hidden="true"></span>
+          <p id="tl-loading-text" data-i18n="tailor.loading.score">Scoring your match…</p>
+        </div>
+
+        <!-- Error state — a clear, retryable message when a request fails. -->
+        <div id="tl-error" class="tl-error" role="alert" hidden>
+          <span data-icon="triangle-alert" data-icon-size="24"></span>
+          <p id="tl-error-text"></p>
+        </div>
+
+        <div id="tl-report" class="tl-report" hidden>
+          <div class="tl-gauge-row">
+            <!-- Animated SVG score ring (reduced-motion-safe; JS draws the arc). -->
+            <div id="tl-gauge" class="tl-gauge" role="img" aria-label="ATS match score — not scored yet">
+              <svg class="tl-ring" viewBox="0 0 120 120" aria-hidden="true">
+                <circle class="tl-ring-track" cx="60" cy="60" r="52" />
+                <circle id="tl-ring-arc" class="tl-ring-arc" cx="60" cy="60" r="52"
+                        transform="rotate(-90 60 60)" />
+              </svg>
+              <span class="tl-gauge-inner">
+                <span id="tl-score-num" class="tl-score-num">—</span>
+                <span class="tl-score-cap" data-i18n="tailor.gauge.caption">ATS match</span>
+              </span>
+            </div>
+            <div class="tl-gauge-side">
+              <div id="tl-tier1" class="tl-tier1 muted"></div>
+              <div id="tl-verdict" class="tl-verdict"></div>
+              <div class="tl-gauge-actions">
+                <button id="tl-optimize" type="button" class="cl-btn cl-btn-primary tl-optimize" hidden>
+                  <span data-icon="scissors" data-icon-size="13"></span>
+                  <span class="tl-optimize-label" data-i18n="tailor.optimize.button">Optimize against this job</span>
+                </button>
+                <a id="tl-open-tailored" class="cl-btn tl-open-tailored" href="#" hidden>
+                  <span data-icon="external-link" data-icon-size="13"></span>
+                  <span data-i18n="tailor.open_tailored">Open tailored CV</span>
+                </a>
+                <button id="tl-build-tailored" type="button" class="cl-btn tl-build-tailored" hidden>
+                  <span data-icon="download" data-icon-size="13"></span>
+                  <span class="tl-build-tailored-label">PDF</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div id="tl-warnings" class="tl-warnings" hidden></div>
+
+          <section id="tl-review" class="tl-review" aria-label="Reviewed CV changes" data-i18n-attr="aria-label:tailor.review_aria" hidden>
+            <div class="tl-review-head">
+              <div>
+                <h3 class="cl-h3 tl-section-h" data-i18n="tailor.review.heading">Review before applying</h3>
+                <p id="tl-review-summary" class="tl-hint muted"></p>
+              </div>
+              <button id="tl-apply-review" type="button" class="cl-btn cl-btn-primary" data-e2e="tailor-apply">
+                <span data-icon="check" data-icon-size="13"></span>
+                <span class="tl-apply-label" data-i18n="tailor.apply.copy">Apply as new copy</span>
+              </button>
+            </div>
+            <div id="tl-review-lineage" class="tl-review-lineage"></div>
+            <pre id="tl-review-diff" class="tl-review-diff" tabindex="0"></pre>
+          </section>
+
+          <section id="tl-profile-comparison" class="tl-profile-compare" aria-label="ATS score-system comparison" data-i18n-attr="aria-label:tailor.profile.compare_aria" hidden></section>
+
+          <!-- Rubric: four JD-relative category sub-scores with evidence. -->
+          <section id="tl-categories-wrap" class="tl-categories-wrap" hidden>
+            <h3 class="cl-h3 tl-section-h" data-i18n="tailor.categories.heading">How this job reads your CV</h3>
+            <div id="tl-categories" class="tl-categories"></div>
+          </section>
+
+          <!-- Rubric: grounded strengths. -->
+          <section id="tl-strengths-wrap" class="tl-list-wrap" hidden>
+            <h3 class="cl-h3 tl-section-h" data-i18n="tailor.strengths.heading">Strengths for this role</h3>
+            <ul id="tl-strengths" class="tl-list tl-list-good"></ul>
+          </section>
+
+          <!-- Rubric: honest, reframe-only suggestions (click to copy). -->
+          <section id="tl-suggestions-wrap" class="tl-list-wrap" hidden>
+            <h3 class="cl-h3 tl-section-h" data-i18n="tailor.suggestions.heading">Ways to strengthen your application</h3>
+            <p class="tl-hint muted" data-i18n="tailor.suggestions.hint">Reframing your real experience only — click any tip to copy it.</p>
+            <div id="tl-suggestions" class="tl-chips tl-fix-chips"></div>
+          </section>
+
+          <h3 class="cl-h3 tl-section-h" data-i18n="tailor.gaps.heading">Gaps — no evidence in your CV</h3>
+          <p class="tl-hint muted" data-i18n="tailor.gaps.hint">These appear in the job but not in your CV. Decide
+            whether to apply anyway or skill up — never add a skill you can't back.
+            Click a gap to copy it.</p>
+          <div id="tl-gaps" class="tl-chips tl-fix-chips"></div>
+
+          <!-- Matched keyword chips only exist on the deterministic (no-key) path. -->
+          <section id="tl-matched-wrap" class="tl-list-wrap" hidden>
+            <h3 class="cl-h3 tl-section-h" data-i18n="tailor.matched.heading">Matched — backed by your CV</h3>
+            <div id="tl-matched" class="tl-chips"></div>
+          </section>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="/static/vendor/supabase-js-2.110.0.js"></script>
+  <script src="/static/auth.js"></script>
+  <script src="/static/i18n.js"></script>
+  <script src="/static/icons.js"></script>
+  <script src="/static/command-palette.js"></script>
+  <script src="/static/credit-state.js"></script>
+  <script src="/static/tailor.js"></script>
+</body>
+</html>

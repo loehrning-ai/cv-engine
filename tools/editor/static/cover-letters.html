@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>CV Copilot · Cover letters</title>
+  <link rel="icon" href="/static/og-image.svg" type="image/svg+xml">
+  <!-- No-flash theme restore — render-blocking, before the stylesheets. -->
+  <script src="/static/theme-init.js"></script>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/cover-letters.css">
+</head>
+<body>
+  <div id="cl-app" class="cl-app">
+__CHROME_TOPBAR__
+
+    <main class="cl-main">
+      <section class="tool-page-head" aria-labelledby="letters-page-heading">
+        <div>
+          <h1 id="letters-page-heading" class="tool-page-title" data-i18n="cl.title">Cover letters</h1>
+          <p class="tool-page-sub muted" data-i18n="cl.page.sub">
+            Saved drafts are listed here. Generate a grounded letter from a source CV and keep editing it later.
+          </p>
+        </div>
+        <div class="tool-page-status" aria-label="Page status">
+          <span class="tool-badge tool-badge-doc" data-i18n="lib.filter.cover">Cover letters</span>
+          <span class="tool-badge tool-badge-counter" data-i18n="cl.status.editable">Editable drafts</span>
+        </div>
+      </section>
+
+      <!-- Left: generator form -->
+      <section class="cl-pane cl-form-pane" aria-label="Generate cover letter" data-i18n-attr="aria-label:cl.generate.heading">
+        <h2 class="cl-h2" data-i18n="cl.generate.heading">Generate a grounded letter</h2>
+        <p class="cl-sub muted" data-i18n="cl.generate.intro">
+          Pick one of your CVs and paste the job description. The letter is
+          written only from facts in your CV — invented employers or metrics
+          are blocked before saving.
+        </p>
+
+        <label class="cl-label" for="cl-cv" data-i18n="cl.field.source_cv">Source CV</label>
+        <select id="cl-cv" class="cl-select" name="source_cv_id" autocomplete="off" aria-label="Source CV" data-i18n-attr="aria-label:cl.field.source_cv"></select>
+
+        <label class="cl-label" for="cl-tone" data-i18n="cl.field.tone">Tone</label>
+        <select id="cl-tone" class="cl-select" name="tone" autocomplete="off" aria-label="Tone" data-i18n-attr="aria-label:cl.field.tone">
+          <option value="auto" data-i18n="cl.tone.auto">Auto (match my CV's voice)</option>
+          <option value="formal" data-i18n="cl.tone.formal">Formal</option>
+          <option value="conversational" data-i18n="cl.tone.conversational">Conversational</option>
+          <option value="enthusiastic" data-i18n="cl.tone.enthusiastic">Enthusiastic</option>
+          <option value="concise" data-i18n="cl.tone.concise">Concise &amp; direct</option>
+        </select>
+
+        <label class="cl-label" for="cl-recipient" data-i18n="cl.field.recipient">Hiring contact (optional)</label>
+        <input id="cl-recipient" class="cl-input" type="text" name="recipient" autocomplete="off"
+               placeholder="e.g. Dr. Jane Doe, or the Data Platform team" data-i18n-attr="placeholder:cl.field.recipient_placeholder" />
+
+        <label class="cl-label" for="cl-job" data-i18n="cl.field.saved_job">Saved job</label>
+        <select id="cl-job" class="cl-select" name="job_id" autocomplete="off" aria-label="Saved job" data-i18n-attr="aria-label:cl.field.saved_job"></select>
+        <p id="cl-job-empty" class="cl-sub muted" hidden></p>
+        <p id="cl-job-warning" class="cl-sub cl-job-warning" role="alert" hidden></p>
+
+        <label class="cl-label" for="cl-jd" data-i18n="cl.field.jd">Job description</label>
+        <textarea id="cl-jd" class="cl-textarea" rows="8" name="job_description" autocomplete="off"
+                  placeholder="Paste the full job posting here…" data-i18n-attr="placeholder:cl.field.jd_placeholder"></textarea>
+
+        <div class="cl-primary-actions">
+          <button id="cl-generate" type="button" class="cl-btn cl-btn-primary">
+            <span data-icon="sparkles" data-icon-size="14"></span>
+            <span class="cl-btn-label" data-i18n="cl.generate.button">Generate letter</span>
+          </button>
+
+          <div id="cl-feedback" class="cl-feedback" role="status" aria-live="polite" hidden></div>
+        </div>
+
+        <section class="cl-library-panel" aria-labelledby="letters-library-heading">
+          <div class="cl-lib-head">
+            <h3 id="letters-library-heading" class="cl-h3" data-i18n="lib.heading">Saved cover letters</h3>
+            <div class="cl-chips" role="group" aria-label="Filter documents by type">
+              <button type="button" class="cl-chip is-active" data-filter="cover_letter" aria-pressed="true" data-i18n="lib.filter.cover">Cover letters</button>
+            </div>
+          </div>
+          <div id="cl-list" class="cl-list"></div>
+        </section>
+      </section>
+
+      <!-- Right: editable result -->
+      <section class="cl-pane cl-result-pane" aria-label="Cover letter" data-i18n-attr="aria-label:cl.result_aria">
+        <div class="cl-result-head">
+          <div class="cl-result-title-stack">
+            <span id="cl-result-name" class="cl-result-name muted" data-i18n="lib.result.none">No letter selected</span>
+            <span id="cl-letter-meta" class="cl-letter-meta muted"></span>
+          </div>
+          <div class="cl-result-actions">
+            <button id="cl-save" type="button" class="cl-btn" hidden>
+              <span data-icon="save" data-icon-size="13"></span><span data-i18n="cl.save_edits">Save edits</span>
+            </button>
+            <button id="cl-download" type="button" class="cl-btn" hidden>
+              <span data-icon="download" data-icon-size="13"></span><span data-i18n="cl.pdf">PDF</span>
+            </button>
+            <button id="cl-preview-toggle" type="button" class="cl-btn" hidden aria-controls="cl-preview" aria-expanded="false">
+              <span data-icon="eye" data-icon-size="13"></span><span data-i18n="cl.preview">Preview</span>
+            </button>
+          </div>
+        </div>
+        <section id="cl-packet-lineage" class="cl-packet-lineage" aria-label="Application packet lineage" data-i18n-attr="aria-label:cl.packet.lineage_aria" hidden>
+          <div class="cl-packet-row">
+            <span id="cl-packet-state" class="cl-packet-chip"></span>
+            <span id="cl-packet-version" class="cl-packet-chip"></span>
+            <span id="cl-packet-id" class="cl-packet-id"></span>
+            <a id="cl-packet-job" class="cl-packet-job" href="#" hidden></a>
+          </div>
+          <dl class="cl-packet-evidence">
+            <div><dt data-i18n="cl.packet.hashes">Hashes</dt><dd id="cl-packet-hashes"></dd></div>
+            <div><dt data-i18n="cl.packet.review">Review</dt><dd id="cl-packet-review"></dd></div>
+          </dl>
+        </section>
+        <textarea id="cl-body" class="cl-body" name="cover_letter_body" autocomplete="off" spellcheck="true" disabled
+                  aria-label="Cover letter body" data-i18n-attr="aria-label:cl.body.aria,placeholder:cl.body.placeholder"
+                  placeholder="Your generated letter appears here and stays editable."></textarea>
+        <iframe id="cl-preview" class="cl-preview" title="Cover letter preview" data-i18n-attr="title:cl.preview_title" hidden></iframe>
+        <div class="cl-result-foot">
+          <span id="cl-wordcount" class="muted"></span>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="/static/vendor/supabase-js-2.110.0.js"></script>
+  <script src="/static/auth.js"></script>
+  <script src="/static/i18n.js"></script>
+  <script src="/static/icons.js"></script>
+  <script src="/static/command-palette.js"></script>
+  <script src="/static/credit-state.js"></script>
+  <script src="/static/cover-letters.js"></script>
+</body>
+</html>

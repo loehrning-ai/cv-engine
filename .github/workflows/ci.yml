@@ -1,0 +1,380 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "17 4 * * 1"
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify source and containers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Install native renderer libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libcairo2 \
+            libffi-dev \
+            libpango-1.0-0 \
+            libpangoft2-1.0-0 \
+            shared-mime-info
+
+      - name: Install locked dependencies
+        run: |
+          python -m venv .venv-app
+          . .venv-app/bin/activate
+          python -m pip install --disable-pip-version-check --require-hashes -r requirements.lock
+          deactivate
+          python -m venv .venv-audit
+          . .venv-audit/bin/activate
+          python -m pip install --disable-pip-version-check --require-hashes -r requirements-audit.lock
+
+      - name: Verify source and dependencies
+        run: |
+          . .venv-app/bin/activate
+          python -m pip check
+          .venv-audit/bin/python -m pip_audit -r requirements.lock
+          .venv-audit/bin/ruff check engine tools tests
+          .venv-audit/bin/bandit -q -lll -r engine tools
+          python -m compileall -q engine tools tests
+          find tools/editor/static -type f -name '*.js' -print0 \
+            | sort -z \
+            | xargs -0 -n1 node --check
+
+      - name: Run non-browser test suite
+        run: |
+          . .venv-app/bin/activate
+          python -m pytest tests --ignore=tests/e2e -q
+          python engine/build.py
+
+      - name: Build and verify hardened containers
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose --profile prod config --quiet
+          docker compose --profile prod build --pull app caddy
+          release_app_id="$(
+            docker image inspect onepager:dev --format '{{.Id}}'
+          )"
+          release_caddy_id="$(
+            docker image inspect onepager-caddy:2.11.4 --format '{{.Id}}'
+          )"
+          release_config="$(
+            ONEPAGER_APP_IMAGE="$release_app_id" \
+            ONEPAGER_CADDY_IMAGE="$release_caddy_id" \
+              docker compose \
+                -f docker-compose.yml \
+                -f docker-compose.release.yml \
+                --profile prod \
+                config
+          )"
+          if grep -Eq '^[[:space:]]+build:' <<<"$release_config"; then
+            echo "Production Compose config retained a build fallback" >&2
+            exit 1
+          fi
+          test "$(
+            grep -c 'pull_policy: never' <<<"$release_config"
+          )" = "3"
+          test "$(
+            sed -n 's/^[[:space:]]*image: //p' <<<"$release_config" \
+              | sort -u
+          )" = "$(
+            printf '%s\n' \
+              "$release_app_id" \
+              "$release_caddy_id" \
+              | sort -u
+          )"
+          export ONEPAGER_APP_IMAGE="$release_app_id"
+          export ONEPAGER_CADDY_IMAGE="$release_caddy_id"
+          export COMPOSE_FILE="docker-compose.yml:docker-compose.release.yml"
+
+          test "$(
+            docker run --rm --read-only --tmpfs /tmp \
+              --entrypoint python3.13 onepager:dev --version
+          )" = "Python 3.13.14"
+          test "$(
+            docker run --rm --entrypoint /bin/busybox onepager:dev id -u
+          )" = "999"
+          # sqlite-libs is deliberately NOT pinned in the Dockerfile: Python
+          # pulls Wolfi's current patched build so upstream security fixes
+          # reach the image without a manual bump. An equality assertion here
+          # would contradict that and turn every upstream patch into a red
+          # build (it did, when Wolfi moved 3.53.3 -> 3.53.4). Assert a floor
+          # instead — a downgrade to a known-vulnerable sqlite still fails
+          # closed — and print what the image actually resolved to.
+          docker run --rm --read-only --tmpfs /tmp \
+            --entrypoint python3.13 onepager:dev \
+            -c 'import sqlite3; from weasyprint import HTML; pdf = HTML(string="<h1>Wolfi render gate</h1>").write_pdf(); assert sqlite3.sqlite_version_info >= (3, 53, 3), sqlite3.sqlite_version; assert pdf[:4] == b"%PDF"; print("sqlite", sqlite3.sqlite_version)'
+
+          caddy_version="$(
+            docker run --rm --entrypoint /usr/bin/caddy \
+              onepager-caddy:2.11.4 version
+          )"
+          test "${caddy_version%% *}" = "v2.11.4"
+          test "$(
+            docker run --rm --entrypoint /bin/busybox \
+              onepager-caddy:2.11.4 id -u
+          )" = "65532"
+          docker run --rm --entrypoint /bin/busybox \
+            onepager-caddy:2.11.4 \
+            cat /usr/share/onepager/caddy-build-modules.txt \
+            | grep -Fqx 'github.com/caddyserver/caddy/v2 v2.11.4'
+          docker run --rm --entrypoint /bin/busybox \
+            onepager-caddy:2.11.4 \
+            cat /usr/share/onepager/caddy-build-modules.txt \
+            | grep -Fqx 'google.golang.org/grpc v1.82.1'
+          docker run --rm --entrypoint /bin/busybox \
+            onepager-caddy:2.11.4 \
+            cat /usr/share/onepager/caddy-build-info.txt \
+            | grep -Fq '/tmp/caddy: go1.26.5'
+          if docker run --rm --entrypoint /bin/sh onepager-caddy:2.11.4 \
+            -c 'command -v curl >/dev/null'; then
+            echo "Caddy runtime unexpectedly contains curl" >&2
+            exit 1
+          fi
+          ONEPAGER_DOMAIN=http://localhost ACME_EMAIL=security@example.invalid \
+            docker compose --profile prod run --rm --no-deps caddy \
+              validate --config /etc/caddy/Caddyfile --adapter caddyfile
+
+          cleanup_containers() {
+            docker compose --profile prod rm -sf app caddy >/dev/null 2>&1 || true
+          }
+          trap cleanup_containers EXIT
+          ONEPAGER_DOMAIN=http://localhost ACME_EMAIL=security@example.invalid \
+            docker compose --profile prod up -d --no-build --no-deps app caddy
+          for _attempt in $(seq 1 60); do
+            if curl -fsS -H 'Host: localhost' \
+              http://127.0.0.1/healthz >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS -H 'Host: localhost' http://127.0.0.1/healthz
+
+      - name: Reject critical or high CVEs in release images
+        shell: bash
+        run: bash tools/ci/scan_container_images.sh
+
+      - name: Retain actionable container CVE reports
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: container-cve-reports-${{ github.sha }}
+          path: trivy-reports/
+          if-no-files-found: error
+          retention-days: 30
+
+  security:
+    name: Secret and workflow policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout complete history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Resolve secret scan commit range
+        id: secret-range
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          python tools/ci/secret_scan_range.py \
+            "$EVENT_NAME" "$GITHUB_EVENT_PATH" "$GITHUB_SHA" \
+            >> "$GITHUB_OUTPUT"
+
+      - name: Audit pinned vendored dependencies
+        run: python tools/ci/check_vendor_advisories.py
+
+      - name: Validate GitHub Actions syntax
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/repo:ro" \
+            -w /repo \
+            rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+
+      - name: Audit GitHub Actions security
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/repo:ro" \
+            -w /repo \
+            ghcr.io/zizmorcore/zizmor@sha256:8e6b3e4fb74d1aa5d23e83ea369f386c66eced0d1fb944d32cd8b2aac100b00d \
+            --no-config --no-ignores .
+
+      - name: Scan selected Git history with Gitleaks
+        env:
+          SECRET_SCAN_LOG_OPTS: ${{ steps.secret-range.outputs.gitleaks_log_opts }}
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/src:ro" \
+            ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
+            git --log-opts="$SECRET_SCAN_LOG_OPTS" \
+            --redact --exit-code=1 /src
+
+      - name: Scan selected Git history with TruffleHog
+        env:
+          SECRET_SCAN_BASE: ${{ steps.secret-range.outputs.base_sha }}
+          SECRET_SCAN_HEAD: ${{ steps.secret-range.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          range_args=(--branch="$SECRET_SCAN_HEAD")
+          if [[ -n "$SECRET_SCAN_BASE" ]]; then
+            range_args+=(--since-commit="$SECRET_SCAN_BASE")
+          fi
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/src:ro" \
+            trufflesecurity/trufflehog@sha256:59b244249d1a1aef4baa24fe73d3c931616264482580d806d77f6c74d26b3e42 \
+            git file:///src "${range_args[@]}" \
+            --no-update --fail --fail-on-scan-errors >/dev/null
+
+  browser:
+    name: Browser contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Install locked app and browser dependencies
+        run: |
+          python -m venv .venv-browser
+          . .venv-browser/bin/activate
+          python -m pip install --disable-pip-version-check \
+            --require-hashes -r requirements.lock
+          python -m pip install --disable-pip-version-check \
+            --require-hashes -r requirements-browser.lock
+          python -m playwright install --with-deps chromium
+
+      - name: Run complete browser suite against isolated demo data
+        id: browser_tests
+        env:
+          ONEPAGER_DEMO_MODE: "true"
+          ONEPAGER_FULL_QA_STRICT_WRITES: "1"
+          PUBLIC_BASE_URL: "http://127.0.0.1:5567"
+          SUPABASE_URL: "http://127.0.0.1:9"
+          SUPABASE_PUBLISHABLE_KEY: "sb_publishable_ci_offline"
+          SUPABASE_JWKS_URL: "http://127.0.0.1:9/auth/v1/.well-known/jwks.json"
+          SUPABASE_SERVICE_ROLE_KEY: ""
+          ONEPAGER_KEK: ""
+          ANTHROPIC_API_KEY: ""
+          OPENAI_API_KEY: ""
+          GOOGLE_API_KEY: ""
+          GEMINI_API_KEY: ""
+          GROQ_API_KEY: ""
+          MISTRAL_API_KEY: ""
+          DEEPSEEK_API_KEY: ""
+          OPENROUTER_API_KEY: ""
+        run: |
+          . .venv-browser/bin/activate
+          cp content/cv.example.yaml "$RUNNER_TEMP/cv.yaml"
+          export ONEPAGER_CV_FILE="$RUNNER_TEMP/cv.yaml"
+          python tools/editor/server.py > "$RUNNER_TEMP/cv-engine-browser.log" 2>&1 &
+          server_pid="$!"
+          cleanup() {
+            kill "$server_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          for _attempt in $(seq 1 120); do
+            if curl -fsS http://127.0.0.1:5567/healthz >/dev/null; then
+              break
+            fi
+            sleep 0.5
+          done
+          curl -fsS http://127.0.0.1:5567/healthz
+          ONEPAGER_E2E_BASE_URL=http://127.0.0.1:5567 \
+            python -m pytest tests/e2e -q
+
+      - name: Collect browser diagnostics
+        if: ${{ always() }}
+        shell: bash
+        env:
+          BROWSER_TEST_OUTCOME: ${{ steps.browser_tests.outcome }}
+          BROWSER_JOB_STATUS: ${{ job.status }}
+        run: |
+          set -u
+          umask 077
+          diagnostics_dir="browser-diagnostics"
+          status_file="$diagnostics_dir/status.txt"
+          install -d -m 0700 "$diagnostics_dir"
+          printf '%s\n' \
+            "browser_test_outcome=${BROWSER_TEST_OUTCOME:-unknown}" \
+            "browser_job_status=${BROWSER_JOB_STATUS:-unknown}" \
+            "runner_os=${RUNNER_OS:-unknown}" \
+            "git_sha=${GITHUB_SHA:-unknown}" \
+            > "$status_file"
+
+          server_log="$RUNNER_TEMP/cv-engine-browser.log"
+          if [[ -f "$server_log" ]]; then
+            if install -m 0600 "$server_log" "$diagnostics_dir/server.log"; then
+              printf '%s\n' "server_log=copied" >> "$status_file"
+            else
+              printf '%s\n' "server_log=copy_failed" >> "$status_file"
+            fi
+          else
+            printf '%s\n' "server_log=missing" >> "$status_file"
+          fi
+
+          shopt -s nullglob
+          actual_count=0
+          actual_copy_failures=0
+          for actual in tests/e2e/baselines/*.actual.png; do
+            if install -m 0600 \
+              "$actual" \
+              "$diagnostics_dir/${actual##*/}"; then
+              ((actual_count += 1))
+            else
+              ((actual_copy_failures += 1))
+            fi
+          done
+          printf '%s\n' \
+            "actual_images_copied=$actual_count" \
+            "actual_image_copy_failures=$actual_copy_failures" \
+            >> "$status_file"
+
+          # Diagnostics must not replace the browser test's primary result.
+          # The upload step still fails if even status.txt could not be created.
+          exit 0
+
+      - name: Retain browser diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: browser-diagnostics-${{ github.sha }}
+          path: browser-diagnostics/
+          if-no-files-found: error
+          retention-days: 14

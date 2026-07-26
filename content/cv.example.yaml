@@ -1,0 +1,116 @@
+# CV Copilot — example CV (safe demo data, no real PII).
+# This is the public/default document shipped in the repo. Your own working
+# copy lives in content/cv.yaml (gitignored). Edit any field, save, and the
+# editor preview re-renders within ~200ms. A4 hard-constrained to one page;
+# the build fails if it overflows.
+
+name: Jordan Avery
+accent: '#1f6f43'
+font: sans
+density: normal
+template: classic
+contact:
+  - network: mail
+    username: jordan.avery@example.com
+  - network: phone
+    username: +1 555 0100
+    label: +1 555 0100
+  - network: web
+    username: jordanavery.example.com
+    label: jordanavery.example.com
+  - network: linkedin
+    username: jordan-avery
+    label: LinkedIn
+  - network: github
+    username: javery
+    label: GitHub
+  - label: Berlin, Germany
+experience:
+  - role: Senior Data Engineer | Platform & Reliability
+    company: Globex
+    location: Berlin, Germany
+    start: 03/2024
+    end: Present
+    bullets:
+      - >-
+        Built the internal data-tooling SDK now used daily across three teams, cutting routine pipeline work by roughly
+        10x and standardizing how jobs are authored.
+      - >-
+        Found and reclaimed ~$180K/year of idle warehouse compute nobody was tracking; right-sized it and the savings
+        held through the next two quarters.
+      - Own the adoption and reliability dashboards leadership reviews weekly when prioritizing platform investment.
+    stack: Python, SQL, Spark, Airflow, dbt, Snowflake
+  - role: Data Scientist | Operations
+    company: Initech
+    location: Munich, Germany
+    start: 07/2022
+    end: 02/2024
+    bullets:
+      - >-
+        Led a Databricks migration in supply chain: wrote the asset bundle and CI/CD that moved 30%+ of the codebase off
+        legacy notebooks.
+      - >-
+        Shipped an internal Python package 10+ analysts adopted for warehouse retrieval, removing duplicated boilerplate
+        from every notebook.
+      - Built end-to-end ML data products across forecasting, anomaly detection, and operations reporting.
+    stack: Python, Databricks, Snowflake, SQL, CI/CD
+  - role: Data Analyst | Last Mile (Internship)
+    company: Hooli
+    location: Hamburg, Germany
+    start: 02/2021
+    end: 08/2021
+    bullets:
+      - Halved a core SQL pipeline's runtime and shipped a regression model forecasting next-period demand for Last Mile.
+    stack: Python, SQL, Pandas, Redshift
+education:
+  - degree: M.Sc. Computer Science (minor Data Science)
+    school: Technical University of Berlin
+    location: Berlin, Germany
+    start: 04/2020
+    end: 07/2022
+  - degree: B.Sc. Computer Science (minor Management)
+    school: University of Hamburg
+    location: Hamburg, Germany
+    start: 10/2016
+    end: 04/2020
+skills:
+  - label: AI / ML
+    items: PyTorch, TensorFlow, RAG, agents, NLP
+  - label: Languages
+    items: Python, SQL, TypeScript, R
+  - label: Data
+    items: Spark, Snowflake, Databricks, dbt, Airflow, Pandas
+  - label: Cloud / DevOps
+    items: AWS, Docker, Kubernetes, CI/CD, Git
+  - label: Spoken
+    items: English (fluent), German (fluent)
+projects:
+  - title: '[example-saas.example.com](https://example.com)'
+    date: '2026'
+    desc: >-
+      A small SaaS that automates a tedious reporting task. Next.js, Postgres, Stripe — live with paying users. Built it
+      to scratch my own itch.
+  - title: '[Podcast Search](https://example.com)'
+    date: '2025'
+    desc: >-
+      Fan site for a podcast I listen to: RAG chat over thousands of transcript chunks, full-text search, and analytics.
+      Solo build.
+leadership:
+  - title: Data Science Mentor
+    date: '2022'
+    desc: Mentored 50 students through a national AI talent scholarship program.
+  - title: Teaching Assistant — ML I & II
+    date: '2022'
+    desc: Supported two machine-learning courses at the Technical University of Berlin.
+others:
+  - title: Two peer-reviewed papers
+    date: '2023'
+    desc: >-
+      Co-authored from my M.Sc. thesis on AI trend analysis: [example paper A](https://example.com) and
+      [example paper B](https://example.com).
+  - title: ML Summer School
+    date: '2023'
+    desc: Selected for an on-site NLP track at an international summer school.
+  - title: Academic Scholarship
+    date: '2021'
+    desc: Awarded for academic performance during the M.Sc. program.

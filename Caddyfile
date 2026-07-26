@@ -1,0 +1,37 @@
+# OnePager — production reverse proxy (Stage 9 scaffold; operator-run).
+#
+# Caddy terminates TLS automatically (Let's Encrypt) for $ONEPAGER_DOMAIN and
+# reverse-proxies to the gunicorn app container on :8000. This file is BUILT in
+# Stage 9 but NOT executed here — there's no Hetzner host or domain yet. The
+# operator points DNS at the VPS and sets ONEPAGER_DOMAIN (see DEPLOY.md).
+#
+# Run via the compose `caddy` service:  docker compose --profile prod up -d
+# Caddy reads ONEPAGER_DOMAIN from the environment (compose passes it through).
+
+{
+	# Operator email for Let's Encrypt expiry/recovery notices.
+	email {$ACME_EMAIL}
+}
+
+{$ONEPAGER_DOMAIN} {
+	encode zstd gzip
+
+	# App health probe (mirrors the container's /healthz).
+	handle /healthz {
+		reverse_proxy app:8000
+	}
+
+	# Everything else → the gunicorn app (landing, /app editor, /api/*, static).
+	reverse_proxy app:8000 {
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Forwarded-Host {host}
+	}
+
+	# Sensible security headers for a public app.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+}

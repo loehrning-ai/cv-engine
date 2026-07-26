@@ -1,0 +1,42 @@
+<!-- Shared subpage chrome (plan 108 stage 2). SINGLE SOURCE OF TRUTH for
+     the .cl-topbar used by /jobs, /tailor, /cover-letters and /account.
+     server.py injects this fragment at serve time (same pattern as the
+     landing PUBLIC_BASE_URL substitution), replacing each page's
+     CHROME_TOPBAR placeholder (token names carry double underscores on
+     both sides; spelled without them here so no literal token survives
+     substitution). Do NOT copy this markup back into a page: edit it here
+     and every subpage picks it up. Tokens: CHROME_TITLE_ICON / _KEY /
+     _TEXT, CHROME_CURRENT_{JOBS,LETTERS,TAILOR,ACCOUNT} (aria-current
+     mark), CHROME_RIGHT_LEAD (page-specific right-cluster lead items). -->
+    <header class="cl-topbar">
+      <a href="/app" class="cl-back" data-tooltip="Back to the CV editor" data-i18n-attr="aria-label:nav.cv_editor,title:nav.cv_editor" aria-label="CV editor" title="CV editor">
+        <span data-icon="file-text" data-icon-size="15"></span>
+        <span data-i18n="nav.cv_editor">CV editor</span>
+      </a>
+      <div class="cl-title">
+        <span data-icon="__CHROME_TITLE_ICON__" data-icon-size="15"></span>
+        <span data-i18n="__CHROME_TITLE_KEY__">__CHROME_TITLE_TEXT__</span>
+      </div>
+      <nav class="cl-nav" aria-label="Applications" data-i18n-attr="aria-label:nav.applications">
+        <a href="/jobs" class="cl-back"__CHROME_CURRENT_JOBS__ aria-label="Jobs" title="Jobs" data-tooltip="Jobs" data-i18n-attr="aria-label:nav.jobs,title:nav.jobs,data-tooltip:nav.jobs">
+          <span data-icon="briefcase" data-icon-size="14"></span><span data-i18n="nav.jobs">Jobs</span>
+        </a>
+        <a href="/cover-letters" class="cl-back"__CHROME_CURRENT_LETTERS__ aria-label="Cover letters" title="Cover letters" data-tooltip="Cover letters" data-i18n-attr="aria-label:nav.letters,title:nav.letters,data-tooltip:nav.letters">
+          <span data-icon="mail" data-icon-size="14"></span><span data-i18n="nav.letters">Cover letters</span>
+        </a>
+        <a href="/tailor" class="cl-back"__CHROME_CURRENT_TAILOR__ aria-label="ATS score and review" title="ATS score and review" data-tooltip="ATS score and review" data-i18n-attr="aria-label:app.tailor,title:app.tailor,data-tooltip:app.tailor">
+          <span data-icon="target" data-icon-size="14"></span><span data-i18n="nav.tailor">ATS</span>
+        </a>
+      </nav>
+      <nav class="cl-utility-nav" aria-label="Account" data-i18n-attr="aria-label:nav.account">
+        <a href="/account" class="cl-back"__CHROME_CURRENT_ACCOUNT__ aria-label="Settings &amp; account" title="Settings &amp; account" data-tooltip="Settings &amp; account" data-i18n-attr="aria-label:mobile.settings,title:mobile.settings,data-tooltip:mobile.settings">
+          <span data-icon="settings" data-icon-size="14"></span><span data-i18n="nav.account">Settings</span>
+        </a>
+      </nav>
+      <div class="cl-topbar-right">
+__CHROME_RIGHT_LEAD__
+        <button id="theme-toggle" type="button" class="icon-btn" aria-label="App theme quick toggle" data-tooltip="App theme quick toggle">
+          <span data-icon-theme="mode" data-icon="sun-moon" data-icon-size="15"></span>
+        </button>
+      </div>
+    </header>

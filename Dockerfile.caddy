@@ -1,0 +1,86 @@
+# syntax=docker/dockerfile:1.7
+
+# Build the exact Caddy release as a Go module dependency so its embedded build
+# metadata proves both the Caddy version and the forced gRPC security floor.
+FROM golang:1.26.5-alpine3.23@sha256:622e56dbc11a8cfe87cafa2331e9a201877271cbff918af53d3be315f3da88cc AS caddy-builder
+
+ARG CADDY_VERSION=v2.11.4
+ARG GRPC_VERSION=v1.82.1
+ENV CGO_ENABLED=0 \
+    GOTOOLCHAIN=local
+WORKDIR /src
+
+COPY <<'EOF' /src/main.go
+package main
+
+import (
+	_ "time/tzdata"
+
+	caddycmd "github.com/caddyserver/caddy/v2/cmd"
+	_ "github.com/caddyserver/caddy/v2/modules/standard"
+)
+
+func main() {
+	caddycmd.Main()
+}
+EOF
+
+RUN --mount=type=cache,target=/go/pkg/mod \
+    set -eux; \
+    test "$(go version)" = "go version go1.26.5 linux/$(go env GOARCH)"; \
+    go mod init onepager.local/caddy; \
+    go mod edit \
+      -require="github.com/caddyserver/caddy/v2@${CADDY_VERSION}" \
+      -require="google.golang.org/grpc@${GRPC_VERSION}"; \
+    go mod tidy; \
+    go list -m all > /tmp/caddy-build-modules.txt; \
+    grep -Fqx "github.com/caddyserver/caddy/v2 ${CADDY_VERSION}" /tmp/caddy-build-modules.txt; \
+    grep -Fqx "google.golang.org/grpc ${GRPC_VERSION}" /tmp/caddy-build-modules.txt
+
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    set -eux; \
+    go build \
+      -trimpath \
+      -buildvcs=false \
+      -tags "nobadger,nomysql,nopgx" \
+      -ldflags "-s -w" \
+      -o /tmp/caddy \
+      .; \
+    version_output="$(/tmp/caddy version)"; \
+    test "${version_output%% *}" = "${CADDY_VERSION}"; \
+    go version -m /tmp/caddy > /tmp/caddy-build-info.txt; \
+    grep -Fq "/tmp/caddy: go1.26.5" /tmp/caddy-build-info.txt; \
+    grep -Fq "dep	github.com/caddyserver/caddy/v2	${CADDY_VERSION}" /tmp/caddy-build-info.txt; \
+    grep -Fq "dep	google.golang.org/grpc	${GRPC_VERSION}" /tmp/caddy-build-info.txt; \
+    cp "$(go env GOMODCACHE)/github.com/caddyserver/caddy/v2@${CADDY_VERSION}/LICENSE" /tmp/CADDY-LICENSE.txt
+
+# The runtime has no compiler or general-purpose HTTP client. Caddy is a static
+# binary; only the current CA bundle is added for ACME and upstream TLS.
+FROM cgr.dev/chainguard/wolfi-base@sha256:02dab76bd852a70556b5b2002195c8a5fdab77d323c433bf6642aab080489795
+
+LABEL org.opencontainers.image.title="CV Copilot Caddy proxy" \
+      org.opencontainers.image.version="2.11.4" \
+      org.opencontainers.image.base.name="cgr.dev/chainguard/wolfi-base" \
+      org.opencontainers.image.description="Source-built Caddy reverse proxy with pinned Go module metadata"
+
+ENV XDG_CONFIG_HOME=/config \
+    XDG_DATA_HOME=/data
+
+RUN apk add --no-cache ca-certificates=20260413-r0 \
+    && mkdir -p /data /config /etc/caddy /usr/share/onepager /usr/share/licenses/caddy \
+    && chown -R nonroot:nonroot /data /config /etc/caddy
+
+COPY --from=caddy-builder /tmp/caddy /usr/bin/caddy
+COPY --from=caddy-builder /tmp/caddy-build-modules.txt /usr/share/onepager/caddy-build-modules.txt
+COPY --from=caddy-builder /tmp/caddy-build-info.txt /usr/share/onepager/caddy-build-info.txt
+COPY --from=caddy-builder /tmp/CADDY-LICENSE.txt /usr/share/licenses/caddy/LICENSE.txt
+
+USER nonroot:nonroot
+
+EXPOSE 80 443 443/udp
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD ["/bin/busybox", "pidof", "caddy"]
+
+ENTRYPOINT ["/usr/bin/caddy"]
+CMD ["run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
