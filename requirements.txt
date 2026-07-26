@@ -11,7 +11,7 @@ defusedxml>=0.7.1,<0.8.0  # reject DTD/entity expansion in untrusted DOCX XML
 # type check (PNG/JPEG/WebP, reject SVG) + header-only decoded-dimension caps
 # to block decompression bombs. Pillow arrives transitively via WeasyPrint, but
 # the photo guard depends on it DIRECTLY, so pin it explicitly.
-pillow>=10.0,<13.0
+pillow>=12.3.0,<13.0
 
 # Optional: AI extract via Claude (only required if you set ANTHROPIC_API_KEY)
 anthropic>=0.34,<1.0
