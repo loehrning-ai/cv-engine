@@ -17,7 +17,61 @@
 __CHROME_TOPBAR__
 
     <main class="cl-main tl-main" id="tl-main" tabindex="-1">
-      <h1 class="sr-only" data-i18n="a11y.tailorHeading">Tailor &amp; ATS score</h1>
+      <section class="tool-page-head application-studio-head" aria-labelledby="tailor-page-heading">
+        <div>
+          <h1 id="tailor-page-heading" class="tool-page-title" data-i18n="a11y.tailorHeading">Tailor &amp; ATS score</h1>
+          <p class="tool-page-sub muted"
+             data-local-en="Review evidence-backed CV changes before creating application documents."
+             data-local-de="Prüfe belegte Lebenslaufänderungen, bevor Bewerbungsdokumente entstehen.">
+            Review evidence-backed CV changes before creating application documents.
+          </p>
+        </div>
+        <div class="tool-page-status" aria-label="Page status"
+             data-local-aria-en="Page status" data-local-aria-de="Seitenstatus">
+          <span class="tool-badge tool-badge-doc"
+                data-local-en="Application studio" data-local-de="Bewerbungsstudio">Application studio</span>
+          <span class="tool-badge tool-badge-counter"
+                data-local-en="Review first" data-local-de="Zuerst prüfen">Review first</span>
+        </div>
+        <nav id="tl-lifecycle" class="application-lifecycle" aria-label="Application lifecycle"
+             data-local-aria-en="Application lifecycle" data-local-aria-de="Bewerbungsablauf"
+             data-current-stage="review">
+          <ol>
+            <li data-lifecycle-stage="job">
+              <a id="tl-flow-job" href="/jobs">
+                <span class="application-step-number" aria-hidden="true">1</span>
+                <span data-local-en="Job" data-local-de="Job">Job</span>
+              </a>
+            </li>
+            <li data-lifecycle-stage="source-cv">
+              <a id="tl-flow-source" href="/app">
+                <span class="application-step-number" aria-hidden="true">2</span>
+                <span data-local-en="Source CV" data-local-de="Quell-Lebenslauf">Source CV</span>
+              </a>
+            </li>
+            <li class="is-current" data-lifecycle-stage="review">
+              <span aria-current="step">
+                <span class="application-step-number" aria-hidden="true">3</span>
+                <span data-local-en="Review" data-local-de="Prüfung">Review</span>
+              </span>
+            </li>
+            <li data-lifecycle-stage="cv-letter">
+              <a id="tl-flow-cover" href="/cover-letters">
+                <span class="application-step-number" aria-hidden="true">4</span>
+                <span data-local-en="CV + letter" data-local-de="Lebenslauf + Anschreiben">CV + letter</span>
+              </a>
+            </li>
+            <li data-lifecycle-stage="ready">
+              <span aria-disabled="true">
+                <span class="application-step-number" aria-hidden="true">5</span>
+                <span data-local-en="Ready" data-local-de="Bereit">Ready</span>
+              </span>
+            </li>
+          </ol>
+          <p id="tl-flow-context" class="application-lifecycle-context muted" aria-live="polite"></p>
+        </nav>
+      </section>
+
       <!-- Left: tailor form -->
       <section class="cl-pane cl-form-pane" aria-label="Score and review CV against a job" data-i18n-attr="aria-label:tailor.form_aria">
         <h2 class="cl-h2" data-i18n="tailor.form.heading">Score and review a CV</h2>
@@ -128,6 +182,18 @@ __CHROME_TOPBAR__
           </div>
 
           <div id="tl-warnings" class="tl-warnings" hidden></div>
+
+          <nav id="tl-next-actions" class="tl-next-actions" aria-label="Next application steps"
+               data-local-aria-en="Next application steps" data-local-aria-de="Nächste Bewerbungsschritte" hidden>
+            <a id="tl-continue-cover" class="cl-btn cl-btn-primary" href="/cover-letters">
+              <span data-icon="arrow-right" data-icon-size="13"></span>
+              <span data-local-en="Continue to cover letter" data-local-de="Weiter zum Anschreiben">Continue to cover letter</span>
+            </a>
+            <a id="tl-back-application" class="cl-btn" href="/jobs">
+              <span data-icon="briefcase" data-icon-size="13"></span>
+              <span data-local-en="Back to application" data-local-de="Zurück zur Bewerbung">Back to application</span>
+            </a>
+          </nav>
 
           <section id="tl-review" class="tl-review" aria-label="Reviewed CV changes" data-i18n-attr="aria-label:tailor.review_aria" hidden>
             <div class="tl-review-head">

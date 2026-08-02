@@ -1093,4 +1093,7 @@ class TestTailorRLS:
             )
             assert not any(d for d in (b_docs or [])), "RLS leak: B created a doc"
         finally:
-            sb_a.table("documents").delete().eq("id", a_cv_id).execute()
+            sb_a.rpc(
+                "delete_document_safely",
+                {"p_document_id": a_cv_id, "p_document_type": "cv"},
+            ).execute()

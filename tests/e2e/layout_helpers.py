@@ -143,6 +143,22 @@ def require_live_server() -> None:
 
 def install_read_only_guards(page: Page) -> None:
     install_layout_vendor_routes(page)
+    page.route(
+        "**/api/jobs/*/apply/readiness*",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=(
+                '{"ready":false,"blockers":[{"code":"reviewed_packet_missing",'
+                '"message":"A reviewed application packet is required."}],"attempts":[],'
+                '"target":{"url":"","host":"","classification":"invalid",'
+                '"open_allowed":false,"reason_code":"invalid_application_url"},'
+                '"packet":null,"config":{"available":false,"enabled":false,'
+                '"kill_switch_active":true},"actions":{"manual_open":false,'
+                '"dry_run":false,"submit":false}}'
+            ),
+        ),
+    )
     page.add_init_script(
         """
         (() => {
@@ -207,6 +223,7 @@ def install_read_only_guards(page: Page) -> None:
           if (window.sessionStorage.getItem("__layoutReadOnlyStorageResetDone") !== "true") {
             window.localStorage.setItem("cv.editor.tourCompleted", "true");
             window.localStorage.setItem("cv.editor.theme", "light");
+            window.localStorage.setItem("cv.editor.formMode", "overview");
             if (!window.localStorage.getItem("onepager.lang")) {
               window.localStorage.setItem("onepager.lang", "en");
             }
@@ -225,6 +242,7 @@ def install_read_only_guards(page: Page) -> None:
           }
           window.localStorage.setItem("cv.editor.tourCompleted", "true");
           window.localStorage.setItem("cv.editor.theme", "light");
+          window.localStorage.setItem("cv.editor.formMode", "overview");
           if (!window.localStorage.getItem("onepager.lang")) {
             window.localStorage.setItem("onepager.lang", "en");
           }
@@ -261,6 +279,7 @@ def install_editor_storage_reset(page: Page, *, once: bool = False) -> None:
           }
           window.localStorage.setItem("cv.editor.tourCompleted", "true");
           window.localStorage.setItem("cv.editor.theme", "light");
+          window.localStorage.setItem("cv.editor.formMode", "overview");
           if (!window.localStorage.getItem("onepager.lang")) {
             window.localStorage.setItem("onepager.lang", "en");
           }
@@ -392,25 +411,31 @@ def _has_auth_session(page: Page) -> bool:
 
 
 def _assert_authenticated_api(page: Page) -> None:
-    status = page.wait_for_function(
+    status = page.evaluate(
         """
-        () => new Promise((resolve) => {
-          let attempts = 0;
-          const probe = () => {
-            attempts += 1;
-            fetch("/api/cvs", { cache: "no-store", credentials: "same-origin" })
-              .then((res) => resolve(res.status && res.status < 400 ? res.status : false))
-              .catch(() => {
-                if (attempts >= 5) resolve(false);
-                else setTimeout(probe, 250);
+        async () => {
+          const session = window.OnePagerAuth &&
+            window.OnePagerAuth.getSession &&
+            window.OnePagerAuth.getSession();
+          const token = session && session.access_token;
+          if (!token) return false;
+          for (let attempt = 0; attempt < 5; attempt += 1) {
+            try {
+              const res = await fetch("/api/cvs", {
+                cache: "no-store",
+                credentials: "same-origin",
+                headers: { Authorization: "Bearer " + token },
               });
-          };
-          probe();
-        })
-        """,
-        timeout=30000,
+              if (res.status && res.status < 400) return res.status;
+            } catch (_) {
+              // A fresh demo process can briefly race the post-login reload.
+            }
+            await new Promise((resolve) => setTimeout(resolve, 250));
+          }
+          return false;
+        }
+        """
     )
-    status = status.json_value()
     assert status and status < 400, f"authenticated /api/cvs probe returned {status}"
 
 

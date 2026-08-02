@@ -1526,6 +1526,7 @@
       });
       if (window.renderIcons) window.renderIcons(container);
       notifyPolishControlsRendered();
+      window.dispatchEvent(new CustomEvent("cv:form-rebuilt"));
     }
 
     function setAtsAdvisories(sections) {

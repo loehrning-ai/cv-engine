@@ -270,21 +270,28 @@ class TestValidation:
 
 
 # ===========================================================================
-#  3. Status enum + transitions (the widened 5-value set).
+#  3. Mutable lifecycle enum. External application state is attempt evidence.
 # ===========================================================================
 class TestStatusEnum:
-    def test_job_statuses_constant_is_five_values(self):
+    def test_job_statuses_exclude_evidence_free_applied_claim(self):
         import jobs_service as js
 
-        assert js.JOB_STATUSES == ("saved", "open", "speculative", "applied", "closed")
+        assert js.JOB_STATUSES == ("saved", "open", "speculative", "closed")
 
-    @pytest.mark.parametrize("status", ["open", "speculative", "applied", "closed", "saved"])
+    @pytest.mark.parametrize("status", ["open", "speculative", "closed", "saved"])
     def test_transition_to_each_status(self, server_module, client, fake_supabase, status):
         jid = client.post("/api/jobs", json={"jd_text": JD_TEXT}).get_json()["id"]
         res = client.post(f"/api/jobs/{jid}/status", json={"status": status})
         assert res.status_code == 200, res.get_data(as_text=True)
         assert res.get_json()["status"] == status
         assert _jobs(fake_supabase)[0]["status"] == status
+
+    def test_applied_status_requires_immutable_attempt_evidence(self, server_module, client, fake_supabase):
+        jid = client.post("/api/jobs", json={"jd_text": JD_TEXT}).get_json()["id"]
+        res = client.post(f"/api/jobs/{jid}/status", json={"status": "applied"})
+        assert res.status_code == 400
+        assert res.get_json()["code"] == "bad_status"
+        assert _jobs(fake_supabase)[0]["status"] == "saved"
 
     def test_garbage_status_rejected(self, server_module, client, fake_supabase):
         jid = client.post("/api/jobs", json={"jd_text": JD_TEXT}).get_json()["id"]
@@ -483,6 +490,7 @@ class TestCrossTenantDbLayer:
             .execute()
             .data[0]["id"]
         )
+        ok = []
         try:
             # (1) APP layer: B tries to generate a cover letter stamped with A's
             #     job → 404 at the ownership check; no document is written.
@@ -521,8 +529,13 @@ class TestCrossTenantDbLayer:
             )
             assert ok, "over-block: B cannot insert an unlinked document"
         finally:
-            sb_b.table("documents").delete().eq("owner_id", B_ID).execute()
-            sb_a.table("saved_jobs").delete().eq("id", a_job_id).execute()
+            for doc_id, doc_type in ((b_cv_id, "cv"), ((ok or [{}])[0].get("id"), "cover_letter")):
+                if doc_id:
+                    sb_b.rpc(
+                        "delete_document_safely",
+                        {"p_document_id": doc_id, "p_document_type": doc_type},
+                    ).execute()
+            sb_a.rpc("delete_saved_job_safely", {"p_job_id": a_job_id}).execute()
 
     def test_b_has_cover_never_reflects_a(self):
         """A has a job + a cover letter for it (has_cover=True for A). B saves a
@@ -581,9 +594,14 @@ class TestCrossTenantDbLayer:
             b_row = next(j for j in b_list["jobs"] if j["id"] == b_job_id)
             assert b_row["has_cover"] is False, "has_cover leak: B reflected A's cover"
         finally:
-            sb_a.table("documents").delete().eq("id", a_cover_id).execute()
-            sb_a.table("saved_jobs").delete().eq("id", a_job_id).execute()
+            sb_a.rpc(
+                "delete_document_safely",
+                {"p_document_id": a_cover_id, "p_document_type": "cover_letter"},
+            ).execute()
+            sb_a.rpc("delete_saved_job_safely", {"p_job_id": a_job_id}).execute()
             if b_job_id:
                 sb_a_admin = create_client(url, pub)
                 sb_a_admin.postgrest.auth(B_TOKEN)
-                sb_a_admin.table("saved_jobs").delete().eq("id", b_job_id).execute()
+                sb_a_admin.rpc(
+                    "delete_saved_job_safely", {"p_job_id": b_job_id}
+                ).execute()

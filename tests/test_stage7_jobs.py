@@ -4,7 +4,8 @@ Covers the feature's contract:
 
   * **job CRUD**: create by paste AND by URL (the URL path is mocked so no
     network is touched, and we assert the SSRF guard is on that path), the JD is
-    parsed + stored, status toggles ('saved'⇄'applied'), delete works;
+    parsed + stored, lifecycle status updates, evidence-free 'applied' is
+    rejected, delete works;
   * **document↔job linkage**: a tailored CV and a cover letter created with a
     ``job_id`` show up grouped under ``GET /api/jobs/<id>``;
   * **one-click chain**: mocking BOTH LLM calls, ``POST /api/jobs/<id>/generate``
@@ -334,15 +335,15 @@ class TestJobCrudPaste:
         assert body["cvs"] == []
         assert body["cover_letters"] == []
 
-    def test_status_toggle_saved_to_applied(self, server_module, client, fake_supabase):
+    def test_status_rejects_evidence_free_applied_label(self, server_module, client, fake_supabase):
         jid = _make_job(client, jd_text=JD_TEXT).get_json()["id"]
         res = client.post(f"/api/jobs/{jid}/status", json={"status": "applied"})
-        assert res.status_code == 200
-        assert res.get_json()["status"] == "applied"
-        # Persisted on the row + reflected in the list.
-        assert _jobs(fake_supabase)[0]["status"] == "applied"
-        back = client.post(f"/api/jobs/{jid}/status", json={"status": "saved"})
-        assert back.get_json()["status"] == "saved"
+        assert res.status_code == 400
+        assert res.get_json()["code"] == "bad_status"
+        assert _jobs(fake_supabase)[0]["status"] == "saved"
+        opened = client.post(f"/api/jobs/{jid}/status", json={"status": "open"})
+        assert opened.status_code == 200
+        assert opened.get_json()["status"] == "open"
 
     def test_starred_job_persists_as_safe_metadata(self, server_module, client, fake_supabase):
         jid = _make_job(client, jd_text=JD_TEXT).get_json()["id"]
@@ -402,6 +403,20 @@ class TestJobCrudPaste:
         assert _jobs(fake_supabase) == []
         # Gone now → 404 on detail.
         assert client.get(f"/api/jobs/{jid}").status_code == 404
+
+    def test_delete_job_rejects_destroying_linked_application_context(
+        self, server_module, client, fake_supabase
+    ):
+        jid = _make_job(client, jd_text=JD_TEXT).get_json()["id"]
+        cv_id, _ = _seed_cv(fake_supabase)
+        next(row for row in _docs(fake_supabase) if row["id"] == cv_id)["job_id"] = jid
+
+        res = client.delete(f"/api/jobs/{jid}")
+
+        assert res.status_code == 409
+        assert res.get_json()["code"] == "job_has_application_history"
+        assert client.get(f"/api/jobs/{jid}").status_code == 200
+        assert next(row for row in _docs(fake_supabase) if row["id"] == cv_id)["job_id"] == jid
 
     def test_unknown_job_is_404(self, server_module, client, fake_supabase):
         rid = str(_uuid.uuid4())
@@ -721,10 +736,10 @@ class TestLinkage:
         assert letter["job_id"] == jid
         assert jid in (letter["yaml_blob"] or "")
 
-    def test_partial_lineage_insert_failure_restores_existing_partial_row(
+    def test_partial_lineage_rpc_failure_preserves_existing_partial_row(
         self, server_module, client, fake_supabase, monkeypatch
     ):
-        """A failed incompatible partial replacement cannot archive the previous partial row."""
+        """A failed atomic merge cannot archive the previous partial row."""
         pytest.importorskip("weasyprint")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-operator-XXXXXXXXXXXXXXXXXXXXXXXX")
         _mock_tailor_llm(monkeypatch, _structured_response([]))
@@ -751,13 +766,12 @@ class TestLinkage:
 
         import jobs_service
 
-        def _fail_insert(_sb, _payload):
-            raise jobs_service.JobError(
-                500,
-                {"error": "Failed to save packet lineage.", "code": "packet_insert_failed"},
-            )
+        before = json.loads(json.dumps(fake_supabase.tables["application_packets"]))
 
-        monkeypatch.setattr(jobs_service, "_insert_packet_payload", _fail_insert)
+        def _fail_merge(_params):
+            raise RuntimeError("atomic packet merge failed")
+
+        monkeypatch.setattr(fake_supabase, "_merge_incomplete_application_packet", _fail_merge)
         with server_module.app.test_request_context(headers={"Authorization": "Bearer test-token"}):
             server_module.auth_mod.auth_g().owner_id = fake_supabase.owner_id
             server_module.auth_mod.auth_g().access_token = "test-token"
@@ -772,7 +786,9 @@ class TestLinkage:
                     now_iso="2026-07-02T12:00:00+00:00",
                 )
 
-        assert exc.value.payload["code"] == "packet_insert_failed"
+        assert exc.value.status == 503
+        assert exc.value.payload["code"] == "packet_storage_unavailable"
+        assert fake_supabase.tables["application_packets"] == before
         row = fake_supabase.tables["application_packets"][0]
         assert row["id"] == packet_id
         assert row["status"] == "review_applied"
@@ -977,9 +993,15 @@ class TestOneClickChain:
         assert packet["cover_letter_review_confirmed_at"]
         detail_packet = client.get(f"/api/jobs/{jid}").get_json()["packets"][0]
         assert detail_packet["document_links"] == {
-            "source_cv": f"/app?id={cv_id}",
-            "tailored_cv": f"/app?id={body['tailored_cv_id']}",
-            "cover_letter": f"/cover-letters?id={body['cover_letter_id']}",
+            "source_cv": f"/app?id={cv_id}&job_id={jid}&cv_id={cv_id}&source_cv_id={cv_id}",
+            "tailored_cv": (
+                f"/app?id={body['tailored_cv_id']}&job_id={jid}"
+                f"&cv_id={body['tailored_cv_id']}&source_cv_id={cv_id}"
+            ),
+            "cover_letter": (
+                f"/cover-letters?id={body['cover_letter_id']}&job_id={jid}"
+                f"&cv_id={body['tailored_cv_id']}&source_cv_id={cv_id}"
+            ),
         }
         assert detail_packet["cover_letter_review_status"] == "confirmed"
 
@@ -1171,7 +1193,9 @@ class TestOneClickChain:
         assert archived.status_code == 200, archived.get_data(as_text=True)
         assert packet["status"] == "archived"
         assert packet["archived_at"]
-        assert packet["document_links"]["source_cv"] == f"/app?id={cv_id}"
+        assert packet["document_links"]["source_cv"] == (
+            f"/app?id={cv_id}&job_id={jid}&cv_id={cv_id}&source_cv_id={cv_id}"
+        )
         assert len(detail["cvs"]) == 1
         assert len(detail["cover_letters"]) == 1
 
@@ -1244,6 +1268,13 @@ class TestOneClickChain:
         jid = _make_job(client, jd_text=JD_TEXT).get_json()["id"]
         review_body, applied = _review_and_apply_packet(client, jid, cv_id)
         packet = client.get(f"/api/jobs/{jid}").get_json()["packets"][0]
+
+        import jobs_service
+
+        def _no_per_job_lookup(_job_id):
+            raise AssertionError("document lineage must batch job reads")
+
+        monkeypatch.setattr(jobs_service, "get_job", _no_per_job_lookup)
 
         docs = client.get("/api/documents").get_json()["documents"]
         indexed = {row["id"]: row for row in docs}
@@ -1346,7 +1377,7 @@ class TestOneClickChain:
         assert jobs_service._safe_source_url("https://jobs.example.com/apply/token/secret") == "https://jobs.example.com"
         assert jobs_service._source_url_redacted("https://jobs.example.com/apply/token/secret") is True
 
-    def test_applied_job_status_propagates_to_document_packet_lineage(
+    def test_mutable_job_status_cannot_claim_external_application(
         self, server_module, client, fake_supabase, monkeypatch
     ):
         pytest.importorskip("weasyprint")
@@ -1362,10 +1393,12 @@ class TestOneClickChain:
         detail = client.get(f"/api/jobs/{jid}").get_json()
         docs = {row["id"]: row for row in client.get("/api/documents").get_json()["documents"]}
 
-        assert status.status_code == 200
-        assert detail["packets"][0]["status"] == "applied_external"
-        assert docs[applied["tailored_cv_id"]]["packet_lineage"]["status"] == "applied_external"
-        assert docs[applied["cover_letter_id"]]["packet_lineage"]["status"] == "applied_external"
+        assert status.status_code == 400
+        assert status.get_json()["code"] == "bad_status"
+        assert detail["job"]["status"] == "saved"
+        assert detail["packets"][0]["status"] == "packet_created"
+        assert docs[applied["tailored_cv_id"]]["packet_lineage"]["status"] == "packet_created"
+        assert docs[applied["cover_letter_id"]]["packet_lineage"]["status"] == "packet_created"
 
     def test_regenerate_prepares_review_and_apply_creates_next_packet_version(
         self, server_module, client, fake_supabase, monkeypatch
@@ -1401,7 +1434,7 @@ class TestOneClickChain:
         assert second.status_code == 201, second.get_data(as_text=True)
         pending_detail = client.get(f"/api/jobs/{jid}").get_json()
         pending_packets = {p["id"]: p for p in pending_detail["packets"]}
-        assert pending_packets[packet_id]["status"] == "packet_created"
+        assert pending_packets[packet_id]["status"] == "archived"
         assert pending_packets[second.get_json()["packet_id"]]["status"] == "review_applied"
 
         confirmed = client.post(
@@ -1442,15 +1475,14 @@ class TestOneClickChain:
         regenerate = client.post(f"/api/jobs/{jid}/packets/{packet_id}/regenerate", json={})
         assert regenerate.status_code == 201, regenerate.get_data(as_text=True)
 
-        import jobs_service
+        def _fail_replace(_params):
+            raise RuntimeError("injected atomic replacement failure")
 
-        def _fail_insert(_sb, _payload):
-            raise jobs_service.JobError(
-                500,
-                {"error": "Failed to save application packet.", "code": "packet_insert_failed"},
-            )
-
-        monkeypatch.setattr(jobs_service, "_insert_packet_payload", _fail_insert)
+        monkeypatch.setattr(
+            fake_supabase,
+            "_replace_active_application_packet",
+            _fail_replace,
+        )
         failed = client.post(
             f"/api/jobs/{jid}/apply-review",
             json={
@@ -1460,8 +1492,8 @@ class TestOneClickChain:
         )
         packet = fake_supabase.tables["application_packets"][0]
 
-        assert failed.status_code == 500
-        assert failed.get_json()["code"] == "packet_insert_failed"
+        assert failed.status_code == 503
+        assert failed.get_json()["code"] == "packet_storage_unavailable"
         assert len(fake_supabase.tables["application_packets"]) == 1
         assert packet["id"] == packet_id
         assert packet["status"] == "packet_created"
@@ -3092,7 +3124,7 @@ class TestJobsRLS:
             # B: flip A's status → 404, and A's status is unchanged.
             s = client.post(
                 f"/api/jobs/{a_job_id}/status",
-                json={"status": "applied"},
+                json={"status": "open"},
                 headers=self._auth(B_TOKEN),
             )
             assert s.status_code == 404
@@ -3116,5 +3148,8 @@ class TestJobsRLS:
             b_docs = sb_a.table("documents").select("id").eq("owner_id", B_ID).execute().data
             assert not (b_docs or []), "RLS leak: B created a doc against A's job"
         finally:
-            sb_a.table("documents").delete().eq("id", a_cv_id).execute()
-            sb_a.table("saved_jobs").delete().eq("id", a_job_id).execute()
+            sb_a.rpc(
+                "delete_document_safely",
+                {"p_document_id": a_cv_id, "p_document_type": "cv"},
+            ).execute()
+            sb_a.rpc("delete_saved_job_safely", {"p_job_id": a_job_id}).execute()

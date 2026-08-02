@@ -35,7 +35,11 @@ import sys
 import tempfile
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
+
+import fcntl
 
 # Load .env (ANTHROPIC_API_KEY, Supabase/R2/KEK secrets) before anything
 # reads os.environ. Guarded so the app still boots if python-dotenv isn't
@@ -206,7 +210,20 @@ class _Conflict(Exception):
 
 
 class _ArtifactCleanupUnavailable(Exception):
-    """Raised before a mutation when derived PDF storage cannot be cleaned."""
+    """Raised when derived PDF storage cannot be cleaned."""
+
+    def __init__(self, *, document_deleted: bool = False) -> None:
+        super().__init__("PDF artifact cleanup unavailable")
+        self.document_deleted = document_deleted
+
+
+class _CoverSourceUnavailable(Exception):
+    """A legacy letter cannot resolve the signer it did not snapshot."""
+
+    def __init__(self, *, status: int, code: str) -> None:
+        super().__init__(code)
+        self.status = status
+        self.code = code
 
 
 def _request_provider_model(payload: dict) -> tuple[str, str | None]:
@@ -536,14 +553,15 @@ def _handle_conflict(exc: _Conflict) -> object:
 
 
 @app.errorhandler(_ArtifactCleanupUnavailable)
-def _handle_artifact_cleanup_unavailable(_exc: _ArtifactCleanupUnavailable) -> object:
+def _handle_artifact_cleanup_unavailable(exc: _ArtifactCleanupUnavailable) -> object:
+    payload = {
+        "error": "PDF artifact storage is temporarily unavailable.",
+        "code": "artifact_cleanup_unavailable",
+    }
+    if exc.document_deleted:
+        payload["document_deleted"] = True
     return (
-        jsonify(
-            {
-                "error": "PDF artifact storage is temporarily unavailable.",
-                "code": "artifact_cleanup_unavailable",
-            }
-        ),
+        jsonify(payload),
         503,
     )
 
@@ -562,6 +580,12 @@ def _handle_cover_letter_error(exc: cl_service.CoverLetterError) -> object:
     the word-cap rejection, a 404 CV-not-found, and provider failures.
     """
     return jsonify(exc.payload), exc.status
+
+
+@app.errorhandler(cl_service.DocumentInsertError)
+def _handle_document_insert_error(exc: cl_service.DocumentInsertError) -> object:
+    status = 409 if exc.code in {"account_unavailable", "job_unavailable"} else 503
+    return jsonify({"error": "Document creation was blocked.", "code": exc.code}), status
 
 
 @app.errorhandler(tailor_svc.TailorError)
@@ -641,6 +665,11 @@ def _local_demo_session() -> dict[str, object]:
     }
 
 
+def _remote_pdf_storage_enabled() -> bool:
+    """Whether this request may use authoritative R2 artifact storage."""
+    return pdf_store.r2_enabled() and not local_demo_store.active()
+
+
 @app.route("/auth/demo-login", methods=["POST"])
 @_demo_login_rate_limit
 def auth_demo_login() -> object:
@@ -686,11 +715,12 @@ def auth_demo_login() -> object:
     # repeated demo logins don't duplicate, and a seeding failure never blocks
     # the login (it only returns the tokens regardless). Gated: only ever runs
     # here, which itself requires demo mode to be on.
-    try:
-        g.access_token = tokens["access_token"]
-        demo_seed.seed_demo_documents()
-    except Exception:  # noqa: BLE001 — seeding must never break the login
-        pass
+    if not tokens.get("local_demo"):
+        try:
+            g.access_token = tokens["access_token"]
+            demo_seed.seed_demo_documents()
+        except Exception:  # noqa: BLE001 — seeding must never break the login
+            pass
 
     # Return the SAME shape Supabase returns so the browser's setSession works.
     body = {
@@ -791,6 +821,16 @@ def api_key() -> object:
         return jsonify({"error": "unsupported provider", "code": "invalid_provider"}), 400
     if provider_spec(provider).auth_type == "none":
         return jsonify({"error": "provider does not use stored API keys", "code": "no_key_required"}), 400
+    if local_demo_store.active():
+        # Reject before validate_provider_key: that validation intentionally
+        # calls the live provider, while demo mode never stores or uses BYO
+        # keys and must stay offline.
+        return jsonify(
+            {
+                "error": "API keys are not stored in demo mode — the demo uses local AI stubs.",
+                "code": "demo_mode_key_not_stored",
+            }
+        ), 400
     key = payload.get("key")
     if not isinstance(key, str) or not key.strip():
         return jsonify({"error": "missing 'key' string"}), 400
@@ -813,7 +853,9 @@ def api_models() -> object:
     Returns ``{providers:[{id, label, default, models:[…]}], default_provider}``
     so the UI can render the provider segmented control + the per-provider model
     dropdown from a single centralized source (no model strings hardcoded in
-    JS). Static per build — purely the in-process allowlist, no secrets.
+    JS). Hosted-provider entries are the in-process allowlist; Ollama may add
+    best-effort models discovered from its loopback-only local endpoint. No
+    remote provider account or secret is queried.
     """
     providers = [
         {
@@ -912,8 +954,29 @@ def api_account_delete() -> object:
     payload = _json_object()
     if payload.get("confirm") != "DELETE":
         return jsonify({"error": "confirmation required", "code": "confirm_required"}), 400
-    _delete_owner_pdf_artifacts()
-    result = account_service.request_account_deletion()
+    # The account transition and every photo operation share this cross-process
+    # owner fence. A photo mutation therefore finishes before the transition,
+    # or acquires the lock afterward and observes the pending account.
+    with _owner_photo_render_lock(exclusive=True):
+        result = account_service.request_account_deletion()
+    artifacts = result.pop("_artifacts", [])
+    if artifacts:
+        try:
+            pdf_store.delete_detached_artifacts(artifacts, strict=False)
+        except Exception as exc:  # noqa: BLE001 - account transition committed
+            app.logger.warning(
+                "account PDF cleanup deferred: %s",
+                type(exc).__name__,
+            )
+    invalid_artifact_count = int(result.get("invalid_artifact_count") or 0)
+    if _artifact_cleanup_applies():
+        try:
+            result["cleanup_pending"] = (
+                pdf_store.pending_artifact_cleanup_count() > 0
+                or invalid_artifact_count > 0
+            )
+        except Exception:
+            result["cleanup_pending"] = True
     # Do NOT delete the on-disk photo here: the request only SOFT-deletes (the
     # 30-day grace window is fully reversible via /api/account/cancel-delete,
     # which restores the documents). The photo is already unreachable while
@@ -1022,15 +1085,52 @@ def _list_cv_rows() -> list[dict]:
         # alongside any CVs created through POST /api/cvs.
         _local_demo_cv_store()
     sb = _document_store()
-    resp = (
-        sb.table("documents")
-        .select("id, name, slug, yaml_blob, accent, font, density, job_id, created_at, updated_at, last_used_at")
+    rows: list[dict] = []
+    page_size = 500
+    offset = 0
+    while True:
+        page = (
+            sb.table("documents")
+            .select("id, name, slug, job_id, created_at, updated_at, last_used_at")
+            .eq("type", "cv")
+            .is_("deleted_at", "null")
+            .order("last_used_at", desc=True)
+            .order("updated_at", desc=True)
+            .order("id")
+            .range(offset, offset + page_size - 1)
+            .execute()
+            .data
+            or []
+        )
+        rows.extend(page)
+        if len(page) < page_size:
+            break
+        offset += page_size
+    return rows
+
+
+def _most_recent_cv_row() -> dict | None:
+    """Fetch one full CV only when an editor/build needs its content."""
+    if local_demo_store.active():
+        _local_demo_cv_store()
+    rows = (
+        _document_store()
+        .table("documents")
+        .select(
+            "id, name, slug, yaml_blob, accent, font, density, job_id, "
+            "created_at, updated_at, last_used_at"
+        )
         .eq("type", "cv")
         .is_("deleted_at", "null")
         .order("last_used_at", desc=True)
+        .order("updated_at", desc=True)
+        .order("id")
+        .limit(1)
         .execute()
+        .data
+        or []
     )
-    return resp.data or []
+    return rows[0] if rows else None
 
 
 def _has_any_cv_rows() -> bool:
@@ -1121,51 +1221,63 @@ def _local_demo_cv_store() -> dict:
     behavior when Supabase is unavailable, without claiming a durable
     database write.
     """
-    table = local_demo_store.db().table("documents")
-    for row in table.rows:
-        if row.get("id") == LOCAL_DEMO_CV_ID:
+    with local_demo_store.locked():
+        table = local_demo_store.db().table("documents")
+        matches = [row for row in table.rows if row.get("id") == LOCAL_DEMO_CV_ID]
+        if matches:
+            # Older processes could race the lazy materialization and create
+            # duplicate rows with the fixed sentinel id. Prefer the newest
+            # saved copy and collapse the invalid duplicates in place.
+            row = max(matches, key=lambda item: str(item.get("updated_at") or ""))
+            if len(matches) > 1:
+                table.rows[:] = [
+                    item for item in table.rows
+                    if item.get("id") != LOCAL_DEMO_CV_ID or item is row
+                ]
             return row
-    seed_path = _local_demo_seed_cv_path()
-    row = {
-        "id": LOCAL_DEMO_CV_ID,
-        "owner_id": local_demo_store.db().owner_id,
-        "type": "cv",
-        "slug": "local-demo-cv",
-        "name": f"Local {seed_path.stem.replace('.', ' ').title()}",
-        "yaml_blob": seed_path.read_text(encoding="utf-8"),
-        "job_id": None,
-        "created_at": None,
-        "updated_at": None,
-        "last_used_at": None,
-    }
-    table.rows.append(row)
-    return row
+        seed_path = _local_demo_seed_cv_path()
+        row = {
+            "id": LOCAL_DEMO_CV_ID,
+            "owner_id": local_demo_store.db().owner_id,
+            "type": "cv",
+            "slug": "local-demo-cv",
+            "name": f"Local {seed_path.stem.replace('.', ' ').title()}",
+            "yaml_blob": seed_path.read_text(encoding="utf-8"),
+            "job_id": None,
+            "created_at": None,
+            "updated_at": None,
+            "last_used_at": None,
+        }
+        table.rows.append(row)
+        return row
 
 
 def _local_demo_cv_row() -> dict:
-    store = _local_demo_cv_store()
-    src = str(store.get("yaml_blob") or "")
-    appearance = _cv_appearance_from_yaml(src)
-    return {
-        "id": LOCAL_DEMO_CV_ID,
-        "name": store.get("name") or f"Local {_local_demo_seed_cv_path().stem.replace('.', ' ').title()}",
-        "slug": "local-demo-cv",
-        "yaml_blob": src,
-        "job_id": None,
-        "created_at": store.get("created_at"),
-        "updated_at": store.get("updated_at"),
-        "last_used_at": store.get("last_used_at"),
-        **appearance,
-    }
+    with local_demo_store.locked():
+        store = _local_demo_cv_store()
+        src = str(store.get("yaml_blob") or "")
+        appearance = _cv_appearance_from_yaml(src)
+        return {
+            "id": LOCAL_DEMO_CV_ID,
+            "name": store.get("name") or f"Local {_local_demo_seed_cv_path().stem.replace('.', ' ').title()}",
+            "slug": "local-demo-cv",
+            "yaml_blob": src,
+            "job_id": None,
+            "created_at": store.get("created_at"),
+            "updated_at": store.get("updated_at"),
+            "last_used_at": store.get("last_used_at"),
+            **appearance,
+        }
 
 
 def _save_local_demo_cv(src: str) -> dict:
-    store = _local_demo_cv_store()
-    updated_at = _now_iso()
-    store["yaml_blob"] = src
-    store["updated_at"] = updated_at
-    store["last_used_at"] = updated_at
-    return _local_demo_cv_row()
+    with local_demo_store.locked():
+        store = _local_demo_cv_store()
+        updated_at = _now_iso()
+        store["yaml_blob"] = src
+        store["updated_at"] = updated_at
+        store["last_used_at"] = updated_at
+        return _local_demo_cv_row()
 
 
 # Let the service layer (tailor/ats-score source-CV loading) reach the seeded
@@ -1277,17 +1389,16 @@ def _seed_cv(name: str = FIRST_RUN_TEMPLATE_CV_NAME) -> dict:
         key: value for key, value in appearance.items()
         if key in {"accent", "font", "density"}
     }
-    sb = _document_store()
-    resp = (
-        sb.table("documents")
-        .insert({"type": "cv", "name": name, "yaml_blob": yaml_blob, **document_appearance})
-        .execute()
+    row = cl_service.insert_document(
+        "cv",
+        name,
+        yaml_blob,
+        accent=document_appearance.get("accent"),
+        font=document_appearance.get("font"),
+        density=document_appearance.get("density"),
     )
-    rows = resp.data or []
-    if not rows:
-        raise RuntimeError("failed to seed CV document")
     _mark_first_cv_seen()
-    return rows[0]
+    return row
 
 
 def _rpc_row(data: object) -> dict | None:
@@ -1307,6 +1418,10 @@ def _mark_first_cv_seen() -> None:
     document fall back to the pseudo demo row.
     """
     global _FIRST_CV_MARKER_RPC_MISSING_LOGGED
+    if local_demo_store.active():
+        # The process-local demo store has no onboarding RPC, and its reserved
+        # token must never be sent to the configured Supabase project.
+        return
     try:
         auth_mod.user_supabase().rpc("mark_first_cv_seen", {}).execute()
     except Exception as exc:  # noqa: BLE001 - do not break document flows on marker drift
@@ -1321,10 +1436,15 @@ def _mark_first_cv_seen() -> None:
         app.logger.warning("could not mark first CV seen: %s", exc)
 
 
-def _account_deletion_pending() -> bool:
+def _account_deletion_pending(*, strict: bool = False) -> bool:
     """Whether the caller has requested account deletion and is in the grace window."""
     owner_id = getattr(g, "owner_id", "") or ""
     if not owner_id:
+        return False
+    if local_demo_store.active():
+        # Demo deletion is explicitly non-persistent and client-side only;
+        # there is no real account row to inspect. Never leak this passive
+        # shell check to Supabase with the reserved demo token.
         return False
     try:
         resp = (
@@ -1335,10 +1455,14 @@ def _account_deletion_pending() -> bool:
             .limit(1)
             .execute()
         )
-    except Exception as exc:  # noqa: BLE001 - this guard only blocks confirmed pending erasure
+    except Exception as exc:  # noqa: BLE001 - strict privacy paths fail closed
         app.logger.warning("could not check account deletion state: %s", exc)
+        if strict:
+            raise auth_mod.AuthError("Account state is temporarily unavailable.", 503) from exc
         return False
     rows = resp.data or []
+    if strict and len(rows) != 1:
+        raise auth_mod.AuthError("Account state is unavailable.", 503)
     return bool(rows and rows[0].get("deletion_requested_at") is not None)
 
 
@@ -1351,6 +1475,12 @@ def _ensure_document_writes_allowed() -> None:
 def _ensure_account_mutations_allowed() -> None:
     """Block account-level mutations while account erasure is pending."""
     if _account_deletion_pending():
+        raise _Conflict("account deletion is pending")
+
+
+def _ensure_account_access_strict() -> None:
+    """Fail closed when privacy-sensitive account state is absent or unreadable."""
+    if _account_deletion_pending(strict=True):
         raise _Conflict("account deletion is pending")
 
 
@@ -1408,10 +1538,10 @@ def _resolve_active_cv(doc_id: str | None) -> dict:
             if row is None:
                 raise _NotFound("CV not found")
             return row
-        rows = _list_cv_rows()
-        if rows:
+        row = _most_recent_cv_row()
+        if row:
             _mark_first_cv_seen()
-            return rows[0]
+            return row
         seeded = _seed_first_cv_if_allowed()
         if seeded:
             return seeded
@@ -1728,23 +1858,73 @@ def api_cv() -> object:
             200,
             {"X-OnePager-Demo-Write": "server-process-memory"},
         )
-    render_inputs_changed = (
-        src != (row.get("yaml_blob") or "")
-        or any(row.get(key) != value for key, value in document_appearance.items())
-    )
-    if render_inputs_changed:
-        _delete_document_pdf_artifacts(row["id"])
     updated_at = _now_iso()
-    sb = _document_store()
-    update = sb.table("documents").update(
-        {"yaml_blob": src, "updated_at": updated_at, **document_appearance}
-    ).eq("id", row["id"])
-    if expected_revision is not None:
-        update = update.eq("updated_at", expected_revision)
-    resp = update.execute()
-    if expected_revision is not None and not (resp.data or []):
+    if local_demo_store.active():
+        saved_rows = (
+            _document_store()
+            .table("documents")
+            .update({"yaml_blob": src, "updated_at": updated_at, **document_appearance})
+            .eq("id", row["id"])
+            .eq("type", "cv")
+            .is_("deleted_at", "null")
+            .execute()
+            .data
+            or []
+        )
+        if not saved_rows:
+            raise _NotFound("CV not found")
+        return (
+            jsonify(
+                {
+                    "saved": True,
+                    "bytes": len(src.encode("utf-8")),
+                    "id": row["id"],
+                    "updated_at": saved_rows[0].get("updated_at"),
+                    "storage": "local-demo-memory",
+                }
+            ),
+            200,
+            {"X-OnePager-Demo-Write": "server-process-memory"},
+        )
+    try:
+        saved = pdf_store.update_document_with_artifact_detach(
+            document_id=row["id"],
+            document_type="cv",
+            expected_revision=(
+                expected_revision
+                if expected_revision is not None
+                else row.get("updated_at")
+            ),
+            yaml_blob=src,
+            updated_at=updated_at,
+            accent=document_appearance.get("accent"),
+            font=document_appearance.get("font"),
+            density=document_appearance.get("density"),
+        )
+    except pdf_store.ArtifactAccountUnavailable:
+        return jsonify({"error": "Account is unavailable.", "code": "account_unavailable"}), 409
+    except pdf_store.StorageError as exc:
+        app.logger.warning("atomic CV save failed: %s", type(exc).__name__)
+        return (
+            jsonify(
+                {
+                    "error": "CV storage is temporarily unavailable.",
+                    "code": "document_save_unavailable",
+                }
+            ),
+            503,
+        )
+    if saved.get("status") == "not_found":
+        raise _NotFound("CV not found")
+    if saved.get("status") == "revision_conflict":
         latest = _cv_row_by_id(row["id"]) or row
-        if src == (latest.get("yaml_blob") or ""):
+        latest_appearance = {
+            key: latest.get(key) for key in ("accent", "font", "density")
+        }
+        if (
+            src == (latest.get("yaml_blob") or "")
+            and latest_appearance == document_appearance
+        ):
             return jsonify(
                 {
                     "saved": True,
@@ -1753,8 +1933,31 @@ def api_cv() -> object:
                     "updated_at": latest.get("updated_at"),
                 }
             )
-        return jsonify({"error": "save conflict", "code": "revision_conflict"}), 409
-    return jsonify({"saved": True, "bytes": len(src.encode("utf-8")), "id": row["id"], "updated_at": updated_at})
+        return (
+            jsonify(
+                {
+                    "error": "save conflict",
+                    "code": "revision_conflict",
+                    "updated_at": latest.get("updated_at"),
+                }
+            ),
+            409,
+        )
+    detached = saved.get("artifacts") or []
+    if detached:
+        try:
+            pdf_store.delete_detached_artifacts(detached, strict=False)
+        except Exception as exc:  # noqa: BLE001 - save is already committed
+            app.logger.warning("deferred CV PDF cleanup: %s", type(exc).__name__)
+    return jsonify(
+        {
+            "saved": True,
+            "bytes": len(src.encode("utf-8")),
+            "id": row["id"],
+            "updated_at": saved.get("document_revision") or updated_at,
+            "cleanup_pending": bool(detached),
+        }
+    )
 
 
 def _artifact_cleanup_applies() -> bool:
@@ -1785,44 +1988,46 @@ def _delete_document_pdf_artifacts(document_id: str) -> int:
         raise _ArtifactCleanupUnavailable from exc
 
 
-def _delete_owner_pdf_artifacts() -> int:
-    """Delete every derived PDF before an account-level state transition."""
+def _delete_detached_document_pdf_artifacts(rows: list[dict[str, Any]]) -> int:
+    """Delete objects captured by the atomic DB delete, never before it."""
+    if not rows or not _artifact_cleanup_applies():
+        return 0
+    try:
+        return pdf_store.delete_detached_artifacts(rows)
+    except Exception as exc:  # noqa: BLE001 - DB delete already committed
+        app.logger.warning(
+            "PDF object cleanup failed after document deletion: %s",
+            type(exc).__name__,
+        )
+        raise _ArtifactCleanupUnavailable(document_deleted=True) from exc
+
+
+def _retry_pending_pdf_artifacts_best_effort() -> int:
+    """Opportunistically consume a small durable cleanup batch on library reads."""
     if not _artifact_cleanup_applies():
         return 0
     try:
-        return pdf_store.delete_owner_artifacts()
-    except Exception as exc:  # noqa: BLE001 — mutation must fail closed
+        return pdf_store.retry_pending_artifact_cleanup(limit=10)
+    except Exception as exc:  # noqa: BLE001 - queue remains durable for retry
         app.logger.warning(
-            "PDF artifact cleanup blocked account mutation: %s",
+            "Pending PDF object cleanup deferred: %s",
             type(exc).__name__,
         )
-        raise _ArtifactCleanupUnavailable from exc
+        return 0
 
 
-def _delete_owner_cv_pdf_artifacts() -> int:
-    """Delete all visible CV PDFs before changing the shared owner photo.
-
-    Enumerating the CVs is part of the cleanup, not a step before it: if the
-    document store cannot be listed there is no way to know which derived PDFs
-    the photo change would orphan, so the listing failure has to fail the
-    mutation closed exactly like a delete failure does.
-    """
+def _delete_owner_cv_pdf_artifacts(*, force: bool = False) -> int:
+    """Atomically detach every owner CV PDF before shared-photo mutation."""
     if not _artifact_cleanup_applies():
         return 0
     try:
-        rows = _list_cv_rows()
+        return pdf_store.delete_owner_cv_artifacts(force=force)
     except Exception as exc:  # noqa: BLE001 — mutation must fail closed
         app.logger.warning(
-            "PDF artifact enumeration blocked photo mutation: %s",
+            "Owner-wide PDF artifact cleanup blocked photo mutation: %s",
             type(exc).__name__,
         )
         raise _ArtifactCleanupUnavailable from exc
-    deleted = 0
-    for row in rows:
-        doc_id = row.get("id")
-        if doc_id:
-            deleted += _delete_document_pdf_artifacts(doc_id)
-    return deleted
 
 
 def _now_iso() -> str:
@@ -2006,6 +2211,7 @@ def api_cvs() -> object:
         row = _seed_cv(name=name)
         return jsonify({"id": row["id"], "name": row.get("name") or name}), 201
 
+    _retry_pending_pdf_artifacts_best_effort()
     try:
         rows = _list_cv_rows()
         if not rows:
@@ -2111,12 +2317,15 @@ def api_cv_duplicate(doc_id: str) -> object:
         if src.get(col) is not None:
             insert[col] = src[col]
 
-    sb = _document_store()
-    resp = sb.table("documents").insert(insert).execute()
-    rows = resp.data or []
-    if not rows:
-        raise RuntimeError("failed to duplicate CV document")
-    return jsonify({"id": rows[0]["id"], "name": rows[0].get("name") or copy_name}), 201
+    row = cl_service.insert_document(
+        "cv",
+        copy_name,
+        str(insert["yaml_blob"]),
+        accent=insert.get("accent"),
+        font=insert.get("font"),
+        density=insert.get("density"),
+    )
+    return jsonify({"id": row["id"], "name": row.get("name") or copy_name}), 201
 
 
 @app.route("/api/cv/<doc_id>/rename", methods=["POST"])
@@ -2168,17 +2377,10 @@ def api_cv_delete(doc_id: str) -> object:
     if _cv_row_by_id(doc_id) is None:
         raise _NotFound("CV not found")
 
-    _delete_document_pdf_artifacts(doc_id)
-    sb = _document_store()
-    resp = (
-        sb.table("documents")
-        .delete()
-        .eq("id", doc_id)
-        .eq("type", "cv")
-        .execute()
-    )
-    if not (resp.data or []):
+    deletion = cl_service.delete_document(doc_id, "cv", include_artifacts=True)
+    if not isinstance(deletion, dict):
         raise _NotFound("CV not found")
+    _delete_detached_document_pdf_artifacts(deletion.get("artifacts") or [])
     return jsonify({"deleted": doc_id})
 
 
@@ -2204,7 +2406,11 @@ def api_cover_letter_generate() -> object:
       * word cap (~400, hard 450).
     On success the letter is stored as a ``cover_letter`` document and returned.
     """
-    payload = request.get_json(silent=True) or {}
+    payload = request.get_json(silent=True)
+    if payload is None:
+        payload = {}
+    if not isinstance(payload, dict):
+        return jsonify({"error": "request body must be an object", "code": "invalid_cover_envelope_type"}), 400
     _ensure_document_writes_allowed()
     cv_id = payload.get("cv_id")
     if not _is_uuid(cv_id):
@@ -2219,22 +2425,14 @@ def api_cover_letter_generate() -> object:
     if len(jd_text.encode("utf-8")) > MAX_CV_YAML_BYTES:
         return jsonify({"error": "job description too large", "max_bytes": MAX_CV_YAML_BYTES}), 413
 
-    # Untrusted free-text fields: they are stored verbatim and interpolated
-    # into the LLM prompt, so they pass the SAME control/invisible-char
-    # boundary as the JD text (see cover_letter.jd) and get a hard length cap —
-    # a 1MB recipient must not reach the prompt or the row.
-    from cover_letter.jd import _strip_control_chars
-
-    tone = _strip_control_chars(str(payload.get("tone") or "auto")).strip() or "auto"
-    recipient = _strip_control_chars(str(payload.get("recipient") or "")).strip()
-    company_context = _strip_control_chars(str(payload.get("company_context") or "")).strip()
-    for field_name, value, max_chars in (
-        ("tone", tone, 200),
-        ("recipient", recipient, 500),
-        ("company_context", company_context, 2000),
-    ):
-        if len(value) > max_chars:
-            return jsonify({"error": f"'{field_name}' is too long", "max_chars": max_chars}), 413
+    # Reject malformed prompt-bound values before ownership lookup or an AI
+    # call. Validation is shared with direct service callers and persistence;
+    # controls are rejected rather than silently deleted.
+    tone, recipient, company_context = cl_service.normalize_generation_inputs(
+        tone=payload.get("tone", "auto"),
+        recipient=payload.get("recipient", ""),
+        company_context=payload.get("company_context", ""),
+    )
     if job_id is not None:
         jobs_svc.assert_job_owned(job_id)
 
@@ -2280,7 +2478,12 @@ def api_cover_letter_generate() -> object:
                 cover_letter_id=str(result["id"]),
                 provider=provider,
                 model=model,
+                ats=None,
+                source_hash=cv_lineage.get("source_cv_hash") if isinstance(cv_lineage, dict) else None,
+                job_content_hash=cv_lineage.get("job_content_hash") if isinstance(cv_lineage, dict) else None,
                 tailored_hash=tailored_hash,
+                score_system_id=cv_lineage.get("score_system_id") if isinstance(cv_lineage, dict) else None,
+                review_id=(cv_lineage.get("cover_letter_review_id") or cv_lineage.get("review_id")) if isinstance(cv_lineage, dict) else None,
                 now_iso=_now_iso(),
             )
             lineage = jobs_svc.packet_lineage_for_document(str(result["id"]))
@@ -2301,6 +2504,7 @@ def api_cover_letters() -> object:
 
     Returns ``{cover_letters: [{id, name, company, role, updated_at}], count}``.
     """
+    _retry_pending_pdf_artifacts_best_effort()
     try:
         rows = cl_service.list_documents("cover_letter")
     except Exception as exc:  # noqa: BLE001 — demo/local shell should stay readable offline
@@ -2327,13 +2531,18 @@ def api_cover_letters() -> object:
         app.logger.warning("using empty demo cover-letter packet-lineage fallback: %s", exc)
         packet_lineages = {}
     for r in rows:
-        blob = cl_service.parse_blob(r.get("yaml_blob"))
+        company = _summary_text(r.get("summary_company"))
+        role = _summary_text(r.get("summary_role"))
+        if not company and not role and r.get("yaml_blob") is not None:
+            legacy_blob = cl_service.parse_blob(r.get("yaml_blob"))
+            company = _summary_text(legacy_blob.get("company"))
+            role = _summary_text(legacy_blob.get("role"))
         job_id = r.get("job_id")
         item = {
             "id": r["id"],
             "name": r.get("name") or "Cover letter",
-            "company": blob.get("company") or "",
-            "role": blob.get("role") or "",
+            "company": company,
+            "role": role,
             # Back-link to the source job (additive; None for standalone letters).
             "job_id": job_id,
             "job_title": titles.get(job_id) if job_id else None,
@@ -2393,14 +2602,10 @@ def api_documents() -> object:
         return jsonify({"documents": items, "count": len(items), "degraded": True})
 
     items: list[dict] = []
-    letter_blobs = []
-    for r in letters:
-        blob = cl_service.parse_blob(r.get("yaml_blob"))
-        letter_blobs.append((r, blob))
     # Resolve linked-job titles in ONE RLS-scoped grouped lookup (no N+1, never
     # SECURITY DEFINER) — a document only shows a job line if the caller owns the job.
     job_ids = [r.get("job_id") for r in cvs if r.get("job_id")]
-    job_ids.extend(r.get("job_id") for r, _b in letter_blobs if r.get("job_id"))
+    job_ids.extend(r.get("job_id") for r in letters if r.get("job_id"))
     try:
         titles = cl_service.job_titles_for(job_ids)
     except Exception as exc:  # noqa: BLE001 — passive title enrichment must not break listing
@@ -2409,7 +2614,7 @@ def api_documents() -> object:
         app.logger.warning("using empty demo document job-title fallback: %s", exc)
         titles = {}
     doc_ids = [r["id"] for r in cvs if r.get("id")]
-    doc_ids.extend(r["id"] for r, _b in letter_blobs if r.get("id"))
+    doc_ids.extend(r["id"] for r in letters if r.get("id"))
     try:
         packet_lineages = jobs_svc.packet_lineage_for_documents(doc_ids)
     except Exception as exc:  # noqa: BLE001 — passive lineage must not break listing
@@ -2427,10 +2632,14 @@ def api_documents() -> object:
                 packet_lineage=packet_lineages.get(r["id"]),
             )
         )
-    for r, blob in letter_blobs:
+    for r in letters:
         job_id = r.get("job_id")
-        company = _summary_text(blob.get("company"))
-        role = _summary_text(blob.get("role"))
+        company = _summary_text(r.get("summary_company"))
+        role = _summary_text(r.get("summary_role"))
+        if not company and not role and r.get("yaml_blob") is not None:
+            legacy_blob = cl_service.parse_blob(r.get("yaml_blob"))
+            company = _summary_text(legacy_blob.get("company"))
+            role = _summary_text(legacy_blob.get("role"))
         item = _document_summary(
             r,
             "cover_letter",
@@ -2466,7 +2675,12 @@ def api_cover_letter() -> object:
            Re-runs the word cap on the edited body (no LLM, no re-grounding —
            the user owns their own edits, but a runaway paste is still capped).
     """
-    doc_id = request.args.get("id") or (request.get_json(silent=True) or {}).get("id")
+    payload = request.get_json(silent=True) if request.method == "POST" else {}
+    if payload is None:
+        payload = {}
+    if not isinstance(payload, dict):
+        return jsonify({"error": "request body must be an object", "code": "invalid_cover_envelope_type"}), 400
+    doc_id = request.args.get("id") or payload.get("id")
     if not _is_uuid(doc_id):
         raise _BadRequest("missing or invalid cover-letter id")
     row = cl_service.document_by_id(str(doc_id), "cover_letter")
@@ -2478,47 +2692,150 @@ def api_cover_letter() -> object:
     if request.method == "GET":
         cl_service.mark_document_used(str(doc_id), "cover_letter", now_iso=_now_iso())
         lineage = jobs_svc.packet_lineage_for_document(str(doc_id))
-        out = {"id": row["id"], "name": row.get("name"), **blob}
+        out = {
+            "id": row["id"],
+            "name": row.get("name"),
+            "updated_at": row.get("updated_at"),
+            **blob,
+        }
         if lineage:
             out["packet_lineage"] = lineage
         return jsonify(out)
 
     _ensure_document_writes_allowed()
-    payload = request.get_json(silent=True) or {}
     body = payload.get("body")
     if body is None or not isinstance(body, str):
         return jsonify({"error": "missing 'body' string"}), 400
-    if len(body.encode("utf-8")) > MAX_CV_YAML_BYTES:
-        return jsonify({"error": "cover letter too large", "max_bytes": MAX_CV_YAML_BYTES}), 413
-    # Cap a user-edited body too (defence-in-depth — not a page count).
-    try:
-        from cover_letter.guards import enforce_word_cap
-
-        enforce_word_cap(body)
-    except Exception as exc:  # noqa: BLE001 — WordCapError → 422
-        return jsonify({"error": str(exc), "code": "word_cap"}), 422
 
     merged = dict(blob)
     merged["body"] = body
     merged["job_id"] = row.get("job_id")
     for key in ("recipient", "company", "role", "tone", "subject", "salutation", "closing"):
-        if key in payload and isinstance(payload[key], str):
-            merged[key] = payload[key].strip()
+        if key in payload:
+            merged[key] = payload[key]
     if "attachments" in payload:
-        attachments = payload.get("attachments")
-        if isinstance(attachments, str):
-            attachments = [item.strip() for item in attachments.splitlines() if item.strip()]
-        if isinstance(attachments, list):
-            merged["attachments"] = [str(item).strip() for item in attachments if item is not None and str(item).strip()]
+        merged["attachments"] = payload.get("attachments")
+    merged = cl_service.normalize_envelope(merged)
+
+    # Cap a user-edited body too (defence-in-depth — not a page count).
+    try:
+        from cover_letter.guards import enforce_word_cap
+
+        enforce_word_cap(merged.get("body") or "")
+    except Exception as exc:  # noqa: BLE001 — WordCapError → 422
+        return jsonify({"error": str(exc), "code": "word_cap"}), 422
+
     new_blob = cl_service.serialize_blob(merged)
-    if new_blob != (row.get("yaml_blob") or ""):
-        _delete_document_pdf_artifacts(row["id"])
-    if not cl_service.update_document_blob(
-        str(doc_id), "cover_letter", new_blob, now_iso=_now_iso()
-    ):
+    expected_revision = payload.get("revision")
+    if expected_revision is None:
+        expected_revision = row.get("updated_at")
+    updated_at = _now_iso()
+    if local_demo_store.active():
+        saved_rows = (
+            _document_store()
+            .table("documents")
+            .update(
+                {
+                    "yaml_blob": new_blob,
+                    "updated_at": updated_at,
+                    "summary_company": _summary_text(merged.get("company")),
+                    "summary_role": _summary_text(merged.get("role")),
+                }
+            )
+            .eq("id", str(doc_id))
+            .eq("type", "cover_letter")
+            .eq("updated_at", expected_revision)
+            .is_("deleted_at", "null")
+            .execute()
+            .data
+            or []
+        )
+        if not saved_rows:
+            latest = cl_service.document_by_id(str(doc_id), "cover_letter")
+            if latest is None:
+                raise _NotFound("cover letter not found")
+            if new_blob == (latest.get("yaml_blob") or ""):
+                updated_at = latest.get("updated_at")
+            else:
+                return (
+                    jsonify(
+                        {
+                            "error": "save conflict; reload the current letter before editing further",
+                            "code": "revision_conflict",
+                            "updated_at": latest.get("updated_at"),
+                        }
+                    ),
+                    409,
+                )
+        else:
+            updated_at = saved_rows[0].get("updated_at")
+        lineage = jobs_svc.packet_lineage_for_document(str(doc_id))
+        out = {
+            "saved": True,
+            "id": row["id"],
+            "updated_at": updated_at,
+            "cleanup_pending": False,
+        }
+        if lineage:
+            out["packet_lineage"] = lineage
+        return jsonify(out)
+    try:
+        saved = pdf_store.update_document_with_artifact_detach(
+            document_id=str(doc_id),
+            document_type="cover_letter",
+            expected_revision=expected_revision,
+            yaml_blob=new_blob,
+            updated_at=updated_at,
+            summary_company=merged.get("company") or "",
+            summary_role=merged.get("role") or "",
+        )
+    except pdf_store.ArtifactAccountUnavailable:
+        return jsonify({"error": "Account is unavailable.", "code": "account_unavailable"}), 409
+    except pdf_store.StorageError as exc:
+        app.logger.warning("atomic cover-letter save failed: %s", type(exc).__name__)
+        return (
+            jsonify(
+                {
+                    "error": "Letter storage is temporarily unavailable.",
+                    "code": "document_save_unavailable",
+                }
+            ),
+            503,
+        )
+    if saved.get("status") == "not_found":
         raise _NotFound("cover letter not found")
+    if saved.get("status") == "revision_conflict":
+        latest = cl_service.document_by_id(str(doc_id), "cover_letter")
+        if latest is None:
+            raise _NotFound("cover letter not found")
+        if new_blob == (latest.get("yaml_blob") or ""):
+            updated_at = latest.get("updated_at")
+        else:
+            return (
+                jsonify(
+                    {
+                        "error": "save conflict; reload the current letter before editing further",
+                        "code": "revision_conflict",
+                        "updated_at": latest.get("updated_at"),
+                    }
+                ),
+                409,
+            )
+    detached = saved.get("artifacts") or []
+    if detached:
+        try:
+            pdf_store.delete_detached_artifacts(detached, strict=False)
+        except Exception as exc:  # noqa: BLE001 - save is already committed
+            app.logger.warning(
+                "deferred cover-letter PDF cleanup: %s", type(exc).__name__
+            )
     lineage = jobs_svc.packet_lineage_for_document(str(doc_id))
-    out = {"saved": True, "id": row["id"]}
+    out = {
+        "saved": True,
+        "id": row["id"],
+        "updated_at": saved.get("document_revision") or updated_at,
+        "cleanup_pending": bool(detached),
+    }
     if lineage:
         out["packet_lineage"] = lineage
     return jsonify(out)
@@ -2533,7 +2850,12 @@ def api_cover_letter_preview(doc_id: str) -> object:
     if row is None:
         raise _NotFound("cover letter not found")
     blob = cl_service.normalized_blob_for_row(row)
-    sender_name = _sender_name_from_cv(blob.get("source_cv_id"))
+    try:
+        sender_name, _sender_cv_id, _sender_cv_revision = (
+            _sender_identity_for_cover(blob)
+        )
+    except _CoverSourceUnavailable as exc:
+        return jsonify({"error": "Cover-letter signer is unavailable.", "code": exc.code}), exc.status
     render_doc = cl_service.build_render_doc(
         blob, name=row.get("name") or "Cover letter", sender_name=sender_name
     )
@@ -2577,9 +2899,10 @@ def api_cover_letter_delete(doc_id: str) -> object:
     _ensure_document_writes_allowed()
     if cl_service.document_by_id(doc_id, "cover_letter") is None:
         raise _NotFound("cover letter not found")
-    _delete_document_pdf_artifacts(doc_id)
-    if not cl_service.delete_document(doc_id, "cover_letter"):
+    deletion = cl_service.delete_document(doc_id, "cover_letter", include_artifacts=True)
+    if not isinstance(deletion, dict):
         raise _NotFound("cover letter not found")
+    _delete_detached_document_pdf_artifacts(deletion.get("artifacts") or [])
     return jsonify({"deleted": doc_id})
 
 
@@ -2604,7 +2927,12 @@ def api_cover_letter_build(doc_id: str) -> object:
 
     blob = cl_service.normalized_blob_for_row(row)
     # Use the signer's name from the source CV if we can read it, else blank.
-    sender_name = _sender_name_from_cv(blob.get("source_cv_id"))
+    try:
+        sender_name, sender_cv_id, sender_cv_revision = (
+            _sender_identity_for_cover(blob)
+        )
+    except _CoverSourceUnavailable as exc:
+        return jsonify({"error": "Cover-letter signer is unavailable.", "code": exc.code}), exc.status
     render_doc = cl_service.build_render_doc(
         blob, name=row.get("name") or "Cover letter", sender_name=sender_name
     )
@@ -2614,7 +2942,7 @@ def api_cover_letter_build(doc_id: str) -> object:
     # R2 path: cache-aware build returning a signed URL (or a cache hit). The
     # cache key is the stored blob text (captures body/recipient/company/etc.)
     # plus the signer name (changing the source CV's name re-renders).
-    if pdf_store.r2_enabled():
+    if _remote_pdf_storage_enabled():
         cache_key_text = cl_service.serialize_blob(blob) + "\x00" + sender_name
         try:
             built = pdf_store.build_cover_letter_pdf(
@@ -2622,26 +2950,94 @@ def api_cover_letter_build(doc_id: str) -> object:
                 owner_id=g.owner_id,
                 cache_key_text=cache_key_text,
                 render_doc=render_doc,
+                document_revision=row.get("updated_at"),
+                dependency_document_id=sender_cv_id,
+                dependency_revision=sender_cv_revision,
                 base_url=base_url,
             )
+        except pdf_store.ArtifactRevisionConflict:
+            return (
+                jsonify(
+                    {
+                        "error": "cover letter changed during PDF build",
+                        "code": "revision_conflict",
+                    }
+                ),
+                409,
+            )
+        except pdf_store.ArtifactAccountUnavailable:
+            return jsonify({"error": "Account is unavailable.", "code": "account_unavailable"}), 409
         except pdf_store.StorageError:
-            return _stream_letter_fallback(render_doc, base_url)
+            return _authorized_letter_stream(row, render_doc, base_url)
         except Exception as exc:  # noqa: BLE001 — render failure → 500 JSON
             return jsonify({"error": f"render failed: {type(exc).__name__}: {exc}"}), 500
+        authorization_error = _export_authorization_error(row, "Cover letter")
+        if authorization_error is not None:
+            return authorization_error
         return jsonify(
             {"url": built.url, "cached": built.cached, "page_count": built.page_count}
         )
 
     # Fallback path: render + stream the bytes (current behaviour, no R2).
-    return _stream_letter_fallback(render_doc, base_url)
+    return _authorized_letter_stream(row, render_doc, base_url)
 
 
-def _stream_letter_fallback(render_doc: dict, base_url: str) -> object:
+def _export_authorization_error(
+    row: dict[str, Any],
+    document_label: str,
+) -> object | None:
+    """Return an HTTP error unless this exact revision remains exportable."""
+    try:
+        if not local_demo_store.active():
+            pdf_store.authorize_document_export(
+                document_id=str(row.get("id")),
+                document_revision=row.get("updated_at"),
+            )
+    except pdf_store.ArtifactAccountUnavailable:
+        return jsonify({"error": "Account is unavailable.", "code": "account_unavailable"}), 409
+    except pdf_store.ArtifactRevisionConflict:
+        return jsonify(
+            {
+                "error": f"{document_label} changed before export.",
+                "code": "revision_conflict",
+            }
+        ), 409
+    except pdf_store.StorageError:
+        return jsonify(
+            {
+                "error": "Export authorization is unavailable.",
+                "code": "export_authorization_unavailable",
+            }
+        ), 503
+    return None
+
+
+def _authorized_letter_stream(
+    row: dict[str, Any],
+    render_doc: dict[str, Any],
+    base_url: str,
+) -> object:
+    authorization_error = _export_authorization_error(row, "Cover letter")
+    if authorization_error is not None:
+        return authorization_error
+    return _stream_letter_fallback(render_doc, base_url, row=row)
+
+
+def _stream_letter_fallback(
+    render_doc: dict,
+    base_url: str,
+    *,
+    row: dict[str, Any] | None = None,
+) -> object:
     """Render a cover letter (semaphore-bounded) and stream the bytes (no R2)."""
     try:
         pdf_bytes = pdf_store.render_cover_letter(render_doc, base_url=base_url)
     except Exception as exc:  # noqa: BLE001 — render failure → 500 JSON
         return jsonify({"error": f"render failed: {type(exc).__name__}: {exc}"}), 500
+    if row is not None:
+        authorization_error = _export_authorization_error(row, "Cover letter")
+        if authorization_error is not None:
+            return authorization_error
     return (
         pdf_bytes,
         200,
@@ -2652,23 +3048,33 @@ def _stream_letter_fallback(render_doc: dict, base_url: str) -> object:
     )
 
 
-def _sender_name_from_cv(cv_id: object) -> str:
-    """Best-effort: the candidate's name from their source CV (for the letter).
-
-    Returns "" if the CV is gone or unreadable — the letter still renders.
-    """
+def _sender_identity_for_cover(
+    blob: dict[str, Any],
+) -> tuple[str, str | None, object | None]:
+    """Return an immutable signer snapshot, with strict legacy fallback."""
+    snapshot = str(blob.get("sender_name") or "").strip()
+    if snapshot:
+        return snapshot, None, None
+    cv_id = blob.get("source_cv_id")
     if not _is_uuid(cv_id):
-        return ""
+        return "", None, None
     try:
         row = cl_service.document_by_id(str(cv_id), "cv")
-        if row is None:
-            return ""
+    except Exception as exc:  # noqa: BLE001 - fail closed on storage outage
+        raise _CoverSourceUnavailable(
+            status=503,
+            code="source_cv_lookup_unavailable",
+        ) from exc
+    if row is None:
+        raise _CoverSourceUnavailable(status=409, code="source_cv_missing")
+    try:
         cv = yaml_safe_load(row.get("yaml_blob") or "")
-        if isinstance(cv, dict):
-            return str(cv.get("name") or "").strip()
-    except Exception:  # noqa: BLE001 — never break the render on a name lookup
-        pass
-    return ""
+    except Exception as exc:  # noqa: BLE001 - malformed legacy source
+        raise _CoverSourceUnavailable(status=409, code="source_cv_invalid") from exc
+    name = str(cv.get("name") or "").strip() if isinstance(cv, dict) else ""
+    if not name:
+        raise _CoverSourceUnavailable(status=409, code="source_cv_name_missing")
+    return name, str(row.get("id")), row.get("updated_at")
 
 
 # ---------------------------------------------------------------------------
@@ -3096,7 +3502,8 @@ def api_job_update(job_id: str) -> object:
 def api_job_status(job_id: str) -> object:
     """Set a saved job's lifecycle status. Body ``{status}``.
 
-    ``status`` must be one of saved | open | speculative | applied | closed.
+    ``status`` must be one of saved | open | speculative | closed. Application
+    state is derived from immutable attempt evidence, never this mutable label.
     A garbage status → 400; a job not owned/visible → 404. Returns
     ``{id, status}``.
     """
@@ -3128,11 +3535,7 @@ def api_job_source_revalidate(job_id: str) -> object:
 
 @app.route("/api/jobs/<job_id>", methods=["DELETE"])
 def api_job_delete(job_id: str) -> object:
-    """Delete a saved job (RLS-scoped). 404 if not owned/visible.
-
-    Linked documents are NOT deleted (FK ``ON DELETE SET NULL``) — they're
-    unlinked and stay in the user's library. Returns ``{deleted: <id>}``.
-    """
+    """Delete an unused saved job; linked application history is protected."""
     if not _is_uuid(job_id):
         return jsonify({"error": "invalid job id"}), 400
     _ensure_document_writes_allowed()
@@ -3493,7 +3896,7 @@ def api_preview() -> object:
     except Exception as exc:  # noqa: BLE001 - local demo preview should still render the bundled CV
         # An explicit id the caller doesn't own must 404 like production;
         # only the no-id / primary-demo-CV path may use the bundled preview.
-        if pdf_store.r2_enabled() or not demo_mode_enabled() or doc_id not in (None, LOCAL_DEMO_CV_ID):
+        if _remote_pdf_storage_enabled() or not demo_mode_enabled() or doc_id not in (None, LOCAL_DEMO_CV_ID):
             raise
         app.logger.warning("using local demo CV preview fallback: %s", exc)
         row = _local_demo_cv_row()
@@ -3590,7 +3993,8 @@ def api_extract_status() -> object:
         provider_status = (status_all.get("providers") or {}).get(provider, {})
         managed = status_all.get("managed_credits_remaining") or 0
         ai_available = bool(
-            provider_status.get("connected")
+            local_demo_store.active()
+            or provider_status.get("connected")
             or (provider == "anthropic" and managed > 0)
         )
     except Exception:  # noqa: BLE001 — never 500 the badge probe
@@ -3824,6 +4228,7 @@ def serve_repo(rel: str) -> object:
 # Map a validated raster format → on-disk extension. The stored extension is
 # derived from the MAGIC BYTES (image_guard), never the upload's filename.
 _FORMAT_EXT = {"PNG": ".png", "JPEG": ".jpg", "WEBP": ".webp"}
+_EXT_FORMAT = {".png": "PNG", ".jpg": "JPEG", ".jpeg": "JPEG", ".webp": "WEBP"}
 
 
 def _owner_photo_dir() -> Path:
@@ -3840,6 +4245,25 @@ def _owner_photo_dir() -> Path:
     return REPO / "design" / "photos" / safe
 
 
+@contextmanager
+def _owner_photo_render_lock(*, exclusive: bool):
+    """Serialize photo mutation against every cacheable CV render process."""
+    owner = str(uuid.UUID(str(getattr(g, "owner_id", ""))))
+    lock_root = Path(tempfile.gettempdir()) / "onepager-photo-render-locks"
+    lock_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    lock_path = lock_root / f"{owner}.lock"
+    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(
+            descriptor,
+            fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH,
+        )
+        yield
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+
 def _remove_owner_photo_files() -> int:
     design_dir = _owner_photo_dir()
     n = 0
@@ -3851,6 +4275,41 @@ def _remove_owner_photo_files() -> int:
             except OSError:
                 pass
     return n
+
+
+def _owner_photo_identity_extension() -> str | None:
+    """Return the stable per-owner photo suffix, surviving photo deletion."""
+    design_dir = _owner_photo_dir()
+    marker = design_dir / "format"
+    try:
+        marked = marker.read_text(encoding="ascii").strip().lower()
+    except OSError:
+        marked = ""
+    if marked in _EXT_FORMAT:
+        return marked
+    if design_dir.is_dir():
+        for candidate in sorted(design_dir.glob("photo.*")):
+            suffix = candidate.suffix.lower()
+            if suffix in _EXT_FORMAT:
+                return suffix
+    return None
+
+
+def _persist_owner_photo_identity(extension: str) -> None:
+    design_dir = _owner_photo_dir()
+    design_dir.mkdir(parents=True, exist_ok=True)
+    marker = design_dir / "format"
+    fd, temp_name = tempfile.mkstemp(prefix=".format-", suffix=".tmp", dir=design_dir)
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="ascii") as tmp:
+            tmp.write(extension)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        os.chmod(temp_path, 0o600)
+        os.replace(temp_path, marker)
+    finally:
+        temp_path.unlink(missing_ok=True)
 
 
 @app.route("/api/asset/photo", methods=["POST"])
@@ -3867,7 +4326,6 @@ def api_upload_photo() -> object:
     Returns the relative path the YAML should reference. The form auto-fills
     ``cv.yaml::photo:`` after a successful upload.
     """
-    _ensure_account_mutations_allowed()
     if local_demo_store.active():
         return (
             jsonify(
@@ -3884,32 +4342,25 @@ def api_upload_photo() -> object:
     if not upload.filename:
         return jsonify({"error": "empty filename"}), 400
 
-    data = upload.read()
+    uploaded_data = upload.read()
     try:
-        data, info = image_guard.sanitise_image_bytes(data)
+        input_info = image_guard.validate_image_bytes(uploaded_data)
     except image_guard.ImageRejected as exc:
         return jsonify({"error": str(exc), "code": "invalid_image"}), 400
 
-    ext = _FORMAT_EXT[info.fmt]
-    # The photo participates in every CV render for this owner. Delete all
-    # derived PDFs before changing it; a remote cleanup failure leaves the
-    # existing photo and documents untouched.
-    _delete_owner_cv_pdf_artifacts()
-    design_dir = _owner_photo_dir()
-    design_dir.mkdir(parents=True, exist_ok=True)
-    out_path = design_dir / f"photo{ext}"
-    # Write in the owner directory, fsync, then atomically replace the target.
-    # A decode/disk failure leaves the prior photo intact.
-    fd, temp_name = tempfile.mkstemp(prefix=".photo-", suffix=".tmp", dir=design_dir)
-    temp_path = Path(temp_name)
-    try:
+    _ensure_account_access_strict()
+    with _owner_photo_render_lock(exclusive=True):
+        _ensure_account_access_strict()
+        extension = _owner_photo_identity_extension() or _FORMAT_EXT[input_info.fmt]
         try:
-            with os.fdopen(fd, "wb") as tmp:
-                tmp.write(data)
-                tmp.flush()
-                os.fsync(tmp.fileno())
-            os.chmod(temp_path, 0o600)
-            os.replace(temp_path, out_path)
+            data, info = image_guard.sanitise_image_bytes(
+                uploaded_data,
+                output_format=_EXT_FORMAT[extension],
+            )
+        except image_guard.ImageRejected as exc:
+            return jsonify({"error": str(exc), "code": "invalid_image"}), 400
+        try:
+            _persist_owner_photo_identity(extension)
         except OSError:
             return (
                 jsonify(
@@ -3920,27 +4371,61 @@ def api_upload_photo() -> object:
                 ),
                 503,
             )
-    finally:
-        temp_path.unlink(missing_ok=True)
-    # Remove only other format variants after the replacement is durable.
-    for stale in design_dir.glob("photo.*"):
-        if stale == out_path:
-            continue
+        # Existing signed URLs are revoked for a privacy-sensitive photo
+        # mutation. The exclusive lock prevents a render from publishing old
+        # bytes between artifact cleanup and the atomic file replacement.
+        _delete_owner_cv_pdf_artifacts(force=True)
+        design_dir = _owner_photo_dir()
+        design_dir.mkdir(parents=True, exist_ok=True)
+        out_path = design_dir / f"photo{extension}"
+        fd, temp_name = tempfile.mkstemp(
+            prefix=".photo-",
+            suffix=".tmp",
+            dir=design_dir,
+        )
+        temp_path = Path(temp_name)
         try:
-            stale.unlink()
-        except OSError:
-            pass
-    rel = str(out_path.relative_to(REPO))
-    return jsonify(
-        {"path": rel, "bytes": out_path.stat().st_size, "width": info.width, "height": info.height}
-    )
+            try:
+                with os.fdopen(fd, "wb") as tmp:
+                    tmp.write(data)
+                    tmp.flush()
+                    os.fsync(tmp.fileno())
+                os.chmod(temp_path, 0o600)
+                os.replace(temp_path, out_path)
+            except OSError:
+                return (
+                    jsonify(
+                        {
+                            "error": "Photo storage is temporarily unavailable.",
+                            "code": "photo_storage_unavailable",
+                        }
+                    ),
+                    503,
+                )
+        finally:
+            temp_path.unlink(missing_ok=True)
+        for stale in design_dir.glob("photo.*"):
+            if stale == out_path:
+                continue
+            try:
+                stale.unlink()
+            except OSError:
+                pass
+        rel = str(out_path.relative_to(REPO))
+        return jsonify(
+            {
+                "path": rel,
+                "bytes": out_path.stat().st_size,
+                "width": info.width,
+                "height": info.height,
+            }
+        )
 
 
 @app.route("/api/asset/photo", methods=["DELETE"])
 @_photo_rate_limit
 def api_delete_photo() -> object:
     """Remove the caller's own design/photos/<owner_id>/photo.* on disk."""
-    _ensure_account_mutations_allowed()
     if local_demo_store.active():
         return (
             jsonify(
@@ -3951,26 +4436,45 @@ def api_delete_photo() -> object:
             ),
             409,
         )
-    design_dir = _owner_photo_dir()
-    has_photo = design_dir.is_dir() and any(design_dir.glob("photo.*"))
-    if has_photo:
-        _delete_owner_cv_pdf_artifacts()
-    n = _remove_owner_photo_files()
+    _ensure_account_access_strict()
+    with _owner_photo_render_lock(exclusive=True):
+        _ensure_account_access_strict()
+        design_dir = _owner_photo_dir()
+        has_photo = design_dir.is_dir() and any(design_dir.glob("photo.*"))
+        if has_photo:
+            extension = _owner_photo_identity_extension()
+            if extension is None:
+                raise _ArtifactCleanupUnavailable
+            _persist_owner_photo_identity(extension)
+            _delete_owner_cv_pdf_artifacts(force=True)
+        n = _remove_owner_photo_files()
     return jsonify({"deleted": n})
 
 
 @app.route("/api/asset/photo/<filename>", methods=["GET"])
 def api_get_photo(filename: str) -> object:
     """Serve only the caller's own uploaded photo variant."""
-    _ensure_account_mutations_allowed()
     if local_demo_store.active():
         abort(404)
+    _ensure_account_access_strict()
     if filename not in {"photo.png", "photo.jpg", "photo.jpeg", "photo.webp"}:
         abort(404)
-    path = _owner_photo_dir() / filename
-    if not path.exists() or not path.is_file():
-        abort(404)
-    return send_file(str(path))
+    with _owner_photo_render_lock(exclusive=False):
+        _ensure_account_access_strict()
+        path = _owner_photo_dir() / filename
+        if not path.exists() or not path.is_file():
+            abort(404)
+        try:
+            payload = path.read_bytes()
+        except OSError:
+            abort(404)
+    content_type = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+    }.get(Path(filename).suffix.lower(), "application/octet-stream")
+    return payload, 200, {"Content-Type": content_type, "Cache-Control": "private, no-store"}
 
 
 @app.route("/api/build", methods=["POST"])
@@ -4021,7 +4525,7 @@ def api_build() -> object:
     except Exception as exc:  # noqa: BLE001 - no-R2 local demo build should still render the bundled CV
         # An explicit id the caller doesn't own must 404 like production;
         # only the no-id / primary-demo-CV path may use the bundled CV.
-        if pdf_store.r2_enabled() or not demo_mode_enabled() or doc_id not in (None, LOCAL_DEMO_CV_ID):
+        if _remote_pdf_storage_enabled() or not demo_mode_enabled() or doc_id not in (None, LOCAL_DEMO_CV_ID):
             raise
         app.logger.warning("using local demo CV build fallback: %s", exc)
         row = _local_demo_cv_row()
@@ -4036,9 +4540,52 @@ def api_build() -> object:
     cache_density = density or _effective_density_from_yaml(yaml_blob)
     cache_template = template or _effective_template_from_yaml(yaml_blob)
     cache_paper = paper or _effective_paper_from_yaml(yaml_blob)
+    persisted_density = _effective_density_from_yaml(yaml_blob)
+    persisted_template = _effective_template_from_yaml(yaml_blob)
+    persisted_paper = _effective_paper_from_yaml(yaml_blob)
+    if (
+        (density and density != persisted_density)
+        or (template and template != persisted_template)
+        or (paper and paper != persisted_paper)
+    ):
+        return (
+            jsonify(
+                {
+                    "error": "PDF appearance overrides must be saved before export",
+                    "code": "stale_build_inputs",
+                }
+            ),
+            409,
+        )
 
-    # R2 path: cache-aware build returning a signed URL (or a cache hit).
-    if pdf_store.r2_enabled():
+    with _owner_photo_render_lock(exclusive=False):
+        return _execute_cv_build(
+            row=row,
+            yaml_blob=yaml_blob,
+            render_density=render_density,
+            render_template=render_template,
+            render_paper=render_paper,
+            cache_density=cache_density,
+            cache_template=cache_template,
+            cache_paper=cache_paper,
+            cv_yaml_error=CvYamlError,
+        )
+
+
+def _execute_cv_build(
+    *,
+    row: dict[str, Any],
+    yaml_blob: str,
+    render_density: str | None,
+    render_template: str | None,
+    render_paper: str | None,
+    cache_density: str,
+    cache_template: str,
+    cache_paper: str,
+    cv_yaml_error: type[Exception],
+) -> object:
+    """Build one CV while the caller holds the owner's shared photo lock."""
+    if _remote_pdf_storage_enabled():
         try:
             rendered, built = pdf_store.build_cv_pdf(
                 document_id=row["id"],
@@ -4049,26 +4596,71 @@ def api_build() -> object:
                 density=cache_density,
                 template=cache_template,
                 paper=cache_paper,
+                document_revision=row.get("updated_at"),
             )
-        except CvYamlError as exc:
+        except cv_yaml_error as exc:
             return jsonify({"error": f"YAML invalid: {exc}"}), 400
+        except pdf_store.ArtifactRevisionConflict:
+            return (
+                jsonify(
+                    {
+                        "error": "CV changed during PDF build",
+                        "code": "revision_conflict",
+                    }
+                ),
+                409,
+            )
+        except pdf_store.ArtifactAccountUnavailable:
+            return jsonify({"error": "Account is unavailable.", "code": "account_unavailable"}), 409
         except pdf_store.StorageError:
-            # R2 hiccup — degrade to a direct stream rather than 500.
-            return _stream_cv_fallback(yaml_blob, render_density, render_template, render_paper)
-        except Exception as exc:  # noqa: BLE001 — render environment failure -> JSON, not HTML 500
-            return jsonify({"error": f"render failed: {type(exc).__name__}: {exc}"}), 503
+            return _authorized_cv_stream(
+                row=row,
+                yaml_blob=yaml_blob,
+                density=render_density,
+                template=render_template,
+                paper=render_paper,
+            )
+        except Exception as exc:  # noqa: BLE001 - normalized render failure
+            return jsonify(
+                {"error": f"render failed: {type(exc).__name__}: {exc}"}
+            ), 503
         if rendered.overflowed:
             return _overflow_response(rendered)
-        # Activation signal: a successful PDF export. No-op unless POSTHOG_KEY
-        # is set; best-effort, never blocks/raises. (Server-side complements
-        # the client /api/analytics/event call; PostHog dedups by event.)
-        analytics.capture(analytics.EVENT_FIRST_EXPORT, getattr(g, "owner_id", "") or "")
-        return jsonify(
-            {"url": built.url, "cached": built.cached, "page_count": built.page_count}
+        authorization_error = _export_authorization_error(row, "CV")
+        if authorization_error is not None:
+            return authorization_error
+        analytics.capture(
+            analytics.EVENT_FIRST_EXPORT,
+            getattr(g, "owner_id", "") or "",
         )
+        return jsonify(
+            {
+                "url": built.url,
+                "cached": built.cached,
+                "page_count": built.page_count,
+            }
+        )
+    return _authorized_cv_stream(
+        row=row,
+        yaml_blob=yaml_blob,
+        density=render_density,
+        template=render_template,
+        paper=render_paper,
+    )
 
-    # Fallback path: render + stream the bytes (current behaviour, no R2).
-    return _stream_cv_fallback(yaml_blob, render_density, render_template, render_paper)
+
+def _authorized_cv_stream(
+    *,
+    row: dict[str, Any],
+    yaml_blob: str,
+    density: str | None,
+    template: str | None,
+    paper: str | None,
+) -> object:
+    authorization_error = _export_authorization_error(row, "CV")
+    if authorization_error is not None:
+        return authorization_error
+    return _stream_cv_fallback(yaml_blob, density, template, paper, row=row)
 
 
 def _overflow_response(rendered) -> object:
@@ -4095,6 +4687,8 @@ def _stream_cv_fallback(
     density: str | None,
     template: str | None = None,
     paper: str | None = None,
+    *,
+    row: dict[str, Any] | None = None,
 ) -> object:
     """Render the CV (semaphore-bounded) and stream the bytes — the no-R2 path.
 
@@ -4111,6 +4705,10 @@ def _stream_cv_fallback(
         return jsonify({"error": f"render failed: {type(exc).__name__}: {exc}"}), 503
     if rendered.overflowed:
         return _overflow_response(rendered)
+    if row is not None:
+        authorization_error = _export_authorization_error(row, "CV")
+        if authorization_error is not None:
+            return authorization_error
     # Activation signal: a successful PDF export (the no-R2 / degrade path).
     # No-op unless POSTHOG_KEY is set; best-effort, never blocks/raises.
     analytics.capture(analytics.EVENT_FIRST_EXPORT, getattr(g, "owner_id", "") or "")

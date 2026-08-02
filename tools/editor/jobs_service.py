@@ -40,8 +40,8 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
-from urllib.parse import quote, unquote, urlparse, urlunparse
+from typing import Any, Callable, Iterable
+from urllib.parse import quote, unquote, urlencode, urlparse, urlunparse
 
 import auth as auth_mod
 import cover_letter_service as cl_service
@@ -72,6 +72,15 @@ def _server_sb():
         return local_demo_store.db()
     return auth_mod.server_supabase()
 
+
+def _rpc_object(data: object) -> dict[str, Any]:
+    """Normalize PostgREST's scalar-JSON response shapes."""
+    if isinstance(data, dict):
+        return data
+    if isinstance(data, list) and data and isinstance(data[0], dict):
+        return data[0]
+    return {}
+
 # engine/ is on sys.path in every entrypoint (server boot, tests).
 try:
     from cover_letter.jd import MAX_JD_CHARS, parse_jd
@@ -85,7 +94,7 @@ except ImportError:  # pragma: no cover - unusual import roots
 # Allowed lifecycle states for a saved job. Widened in Stage 6 (plan 002) in
 # LOCKSTEP with the DB CHECK (migration 0007 saved_jobs_status_check). Kept tiny
 # + explicit so an arbitrary/garbage status can never be written.
-JOB_STATUSES = ("saved", "open", "speculative", "applied", "closed")
+JOB_STATUSES = ("saved", "open", "speculative", "closed")
 
 # Cap on a fetched/pasted JD (mirrors the parser's own cap so a giant paste
 # can't bloat the row before parse_jd trims it).
@@ -112,6 +121,8 @@ JOB_URL_RATE_LIMIT_PER_MINUTE = int(os.environ.get("ONEPAGER_JOB_URL_RATE_LIMIT_
 PACKET_PROMPT_VERSION = "jobs_packet.v1"
 PACKET_VERSION = 1
 DEFAULT_SCORE_SYSTEM_ID = "semantic_fit"
+PACKET_LINEAGE_BATCH_SIZE = 100
+HIGH_CARDINALITY_PAGE_SIZE = 500
 _URL_FETCH_BUCKETS: dict[str, list[float]] = {}
 _EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
 _MAILTO_RE = re.compile(r"mailto:[^\s)>]+", re.IGNORECASE)
@@ -1973,25 +1984,88 @@ def save_selected_import_results(run_id: str, result_ids: object) -> dict[str, A
         .data
         or []
     )
-    write_sb = _server_sb()
     saved: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     for row in rows:
         row = _trusted_import_result_for_save(row)
-        duplicate = _find_duplicate_job(row)
-        if duplicate:
-            skipped.append({"result_id": row.get("id"), "reason": "duplicate", "job_id": duplicate.get("id")})
+        if local_demo_store.active():
+            duplicate = _find_duplicate_job(row)
+            if duplicate:
+                _server_sb().table("job_import_results").update(
+                    {
+                        "selected": True,
+                        "saved_job_id": duplicate.get("id"),
+                        "updated_at": _now_iso(),
+                    }
+                ).eq("id", row.get("id")).eq("owner_id", _owner_id()).execute()
+                skipped.append(
+                    {
+                        "result_id": row.get("id"),
+                        "reason": "duplicate",
+                        "job_id": duplicate.get("id"),
+                    }
+                )
+                continue
+            inserted = _server_sb().table("saved_jobs").insert(_result_to_job_payload(row)).execute().data or []
+            if not inserted:
+                skipped.append({"result_id": row.get("id"), "reason": "insert_failed"})
+                continue
+            local_job = inserted[0]
+            _server_sb().table("job_import_results").update(
+                {"selected": True, "saved_job_id": local_job.get("id"), "updated_at": _now_iso()}
+            ).eq("id", row.get("id")).eq("owner_id", _owner_id()).execute()
+            saved.append(_public_job(local_job))
             continue
         payload = _result_to_job_payload(row)
-        inserted = write_sb.table("saved_jobs").insert(payload).execute().data or []
-        if not inserted:
-            skipped.append({"result_id": row.get("id"), "reason": "insert_failed"})
+        payload.pop("owner_id", None)
+        payload.pop("status", None)
+        try:
+            result = _rpc_object(
+                _server_sb()
+                .rpc(
+                    "save_import_result_as_job",
+                    {
+                        "p_owner_id": _owner_id(),
+                        "p_run_id": run_id,
+                        "p_result_id": row.get("id"),
+                        "p_job_payload": payload,
+                        "p_now": _now_iso(),
+                    },
+                )
+                .execute()
+                .data
+            )
+        except Exception as exc:
+            raise JobError(
+                503,
+                {
+                    "error": "Imported job storage is temporarily unavailable.",
+                    "code": "import_save_unavailable",
+                },
+            ) from exc
+        status = result.get("status")
+        job = result.get("job") if isinstance(result.get("job"), dict) else None
+        if status == "created" and job:
+            saved.append(_public_job(job))
             continue
-        job = inserted[0]
-        write_sb.table("job_import_results").update(
-            {"selected": True, "saved_job_id": job.get("id"), "updated_at": _now_iso()}
-        ).eq("id", row.get("id")).eq("owner_id", _owner_id()).execute()
-        saved.append(_public_job(job))
+        if status == "linked" and job:
+            skipped.append(
+                {
+                    "result_id": row.get("id"),
+                    "reason": "duplicate",
+                    "job_id": job.get("id"),
+                }
+            )
+            continue
+        code = str(result.get("code") or "import_save_failed")
+        if code == "account_unavailable":
+            raise JobError(409, {"error": "Account is unavailable.", "code": code})
+        if code in {"import_run_not_found", "import_result_not_found"}:
+            raise JobError(404, {"error": "Import result not found.", "code": code})
+        raise JobError(
+            500,
+            {"error": "Imported job storage returned invalid evidence.", "code": code},
+        )
     return {"saved": saved, "skipped": skipped, "saved_count": len(saved), "skipped_count": len(skipped)}
 
 
@@ -2029,16 +2103,11 @@ def revalidate_job_source(
     job = get_job(job_id)
     if job is None:
         raise JobError(404, {"error": "Job not found", "code": "job_not_found"})
-    metadata = _safe_source_metadata(job.get("source_metadata"))
     now = now_iso or _now_iso()
-    updates: dict[str, Any] = {"updated_at": now}
-    if mark_stale is True:
-        updates["verification_status"] = "stale"
-    else:
-        updates["verification_status"] = "user_provided"
-        updates["last_seen_at"] = now
-        metadata["verified_at"] = now[:10]
-
+    text: str | None = None
+    jd_json: dict[str, Any] | None = None
+    content_hash: str | None = None
+    experience_requirements: dict[str, Any] | None = None
     if isinstance(full_jd_text, str) and full_jd_text.strip():
         text = full_jd_text.strip()
         if len(text.encode("utf-8")) > MAX_JD_BYTES:
@@ -2047,31 +2116,88 @@ def revalidate_job_source(
             jd_json = parse_jd(text, title=job.get("title"), company=job.get("company"))
         except ValueError as exc:
             raise JobError(400, {"error": str(exc), "code": "empty_jd"}) from exc
-        metadata["full_jd_status"] = "reviewed"
-        updates.update({
-            "jd_text": text,
-            "jd_json": jd_json,
-            "content_hash": _content_hash(text),
-            "experience_requirements": _job_experience_requirements(text, jd_json),
-        })
-    elif metadata.get("full_jd_status") == "missing":
-        updates["verification_status"] = "needs_review"
-
-    metadata["revalidation"] = "manual_review"
-    updates["source_metadata"] = metadata
-    rows = (
-        _server_sb()
-        .table("saved_jobs")
-        .update(updates)
-        .eq("id", job_id)
-        .eq("owner_id", _owner_id())
-        .execute()
-        .data
-        or []
-    )
-    if not rows:
+        content_hash = _content_hash(text)
+        experience_requirements = _job_experience_requirements(text, jd_json)
+    if local_demo_store.active():
+        metadata = _safe_source_metadata(job.get("source_metadata"))
+        updates: dict[str, Any] = {
+            "updated_at": now,
+            "verification_status": "stale" if mark_stale is True else "user_provided",
+        }
+        if mark_stale is not True:
+            updates["last_seen_at"] = now
+            metadata["verified_at"] = now[:10]
+        if text is not None:
+            metadata["full_jd_status"] = "reviewed"
+            updates.update(
+                {
+                    "jd_text": text,
+                    "jd_json": jd_json,
+                    "content_hash": content_hash,
+                    "experience_requirements": experience_requirements,
+                }
+            )
+        elif metadata.get("full_jd_status") == "missing" and mark_stale is not True:
+            updates["verification_status"] = "needs_review"
+        metadata["revalidation"] = "manual_review"
+        updates["source_metadata"] = metadata
+        rows = (
+            _server_sb()
+            .table("saved_jobs")
+            .update(updates)
+            .eq("id", job_id)
+            .eq("owner_id", _owner_id())
+            .execute()
+            .data
+            or []
+        )
+        if not rows:
+            raise JobError(404, {"error": "Job not found", "code": "job_not_found"})
+        refreshed = rows[0]
+        cover_by_job = _covers_for_jobs([job_id])
+        return _public_job(
+            refreshed,
+            full=True,
+            has_cover=job_id in cover_by_job,
+            cover_id=cover_by_job.get(job_id),
+        )
+    try:
+        result = _rpc_object(
+            _server_sb()
+            .rpc(
+                "revalidate_saved_job_source",
+                {
+                    "p_owner_id": _owner_id(),
+                    "p_job_id": job_id,
+                    "p_mark_stale": mark_stale is True,
+                    "p_full_jd_text": text,
+                    "p_jd_json": jd_json,
+                    "p_content_hash": content_hash,
+                    "p_experience_requirements": experience_requirements,
+                    "p_now": now,
+                },
+            )
+            .execute()
+            .data
+        )
+    except Exception as exc:
+        raise JobError(
+            503,
+            {
+                "error": "Job source storage is temporarily unavailable.",
+                "code": "job_revalidation_unavailable",
+            },
+        ) from exc
+    if result.get("status") == "not_found":
         raise JobError(404, {"error": "Job not found", "code": "job_not_found"})
-    refreshed = get_job(job_id) or {**job, **updates}
+    if result.get("code") == "account_unavailable":
+        raise JobError(409, {"error": "Account is unavailable.", "code": "account_unavailable"})
+    refreshed = result.get("job") if result.get("status") == "saved" else None
+    if not isinstance(refreshed, dict):
+        raise JobError(
+            500,
+            {"error": "Job source storage returned invalid evidence.", "code": "job_revalidation_failed"},
+        )
     cover_by_job = _covers_for_jobs([job_id])
     return _public_job(
         refreshed,
@@ -2285,18 +2411,20 @@ def list_jobs() -> list[dict[str, Any]]:
     a non-deleted ``cover_letter`` document stamped with that job's id.
     """
     sb = _sb()
-    resp = (
-        sb.table("saved_jobs")
-        .select(
-            "id, title, company, status, created_at, field, deadline, confidence, why_fit, "
-            "import_run_id, source_provider, source_type, source_external_id, source_url, "
-            "source_metadata, source_country, source_region, source_location, remote_mode, "
-            "salary_text, seniority, verification_status, content_hash, experience_requirements, last_seen_at, expires_at"
-        )
-        .order("created_at", desc=True)
-        .execute()
+    columns = (
+        "id, title, company, status, created_at, field, deadline, confidence, why_fit, "
+        "import_run_id, source_provider, source_type, source_external_id, source_url, "
+        "source_metadata, source_country, source_region, source_location, remote_mode, "
+        "salary_text, seniority, verification_status, content_hash, experience_requirements, last_seen_at, expires_at"
     )
-    rows = resp.data or []
+    rows = _paged_rows(
+        lambda: (
+            sb.table("saved_jobs")
+            .select(columns)
+            .order("created_at", desc=True)
+            .order("id", desc=True)
+        )
+    )
     cover_by_job = _covers_for_jobs([r.get("id") for r in rows])
     return [
         _public_job(r, has_cover=r.get("id") in cover_by_job, cover_id=cover_by_job.get(r.get("id")))
@@ -2314,25 +2442,28 @@ def _covers_for_jobs(job_ids: list[str]) -> dict[str, str]:
     multiple cover letters the most-recently-updated one wins (the grid's "Open"
     target). Returns ``{job_id: cover_document_id}``.
     """
-    ids = [j for j in job_ids if j]
+    ids = sorted({j for j in job_ids if j})
     if not ids:
         return {}
     sb = _sb()
-    resp = (
-        sb.table("documents")
-        .select("id, job_id, updated_at")
-        .eq("type", "cover_letter")
-        .is_("deleted_at", "null")
-        .in_("job_id", ids)
-        .order("updated_at", desc=True)
-        .execute()
-    )
     out: dict[str, str] = {}
-    # Rows are newest-first; keep the FIRST (most recent) cover per job.
-    for r in resp.data or []:
-        jid = r.get("job_id")
-        if jid and jid not in out:
-            out[jid] = r.get("id")
+    for batch in _bounded_batches(ids):
+        rows = _paged_rows(
+            lambda batch=batch: (
+                sb.table("documents")
+                .select("id, job_id, updated_at")
+                .eq("type", "cover_letter")
+                .is_("deleted_at", "null")
+                .in_("job_id", batch)
+                .order("updated_at", desc=True)
+                .order("id", desc=True)
+            )
+        )
+        # Rows are newest-first; each job occurs in exactly one batch.
+        for r in rows:
+            jid = r.get("job_id")
+            if jid and jid not in out:
+                out[jid] = r.get("id")
     return out
 
 
@@ -2445,7 +2576,9 @@ def set_status(job_id: str, status: str) -> dict[str, Any]:
     """Set a job's lifecycle status. Raises 404 if not owned.
 
     ``status`` must be one of :data:`JOB_STATUSES`
-    (saved | open | speculative | applied | closed).
+    (saved | open | speculative | closed). External application state is
+    evidence from ``application_apply_attempts`` and cannot be authored by a
+    mutable catalog label.
     Validates ``status`` against :data:`JOB_STATUSES` (a garbage value → 400),
     then UPDATEs the row under the user's JWT. An UPDATE that moves no row means
     the job isn't owned/visible → 404 (RLS).
@@ -2506,33 +2639,81 @@ def update_job(job_id: str, patch: dict[str, Any]) -> dict[str, Any]:
                 400, {"error": f"status must be one of {list(JOB_STATUSES)}", "code": "bad_status"}
             )
         updates["status"] = status
+    starred: bool | None = None
     if "starred" in patch:
         if not isinstance(patch.get("starred"), bool):
             raise JobError(400, {"error": "starred must be boolean", "code": "bad_starred"})
-        current = get_job(job_id)
-        if current is None:
-            raise JobError(404, {"error": "Job not found", "code": "job_not_found"})
-        metadata = _safe_source_metadata(current.get("source_metadata"))
-        metadata["starred"] = patch["starred"]
-        updates["source_metadata"] = metadata
+        starred = patch["starred"]
 
-    if not updates:
+    if not updates and starred is None:
         raise JobError(400, {"error": "no editable fields in request", "code": "empty_patch"})
 
     # Confirm ownership/visibility first so a no-op update is a clean 404.
     if get_job(job_id) is None:
         raise JobError(404, {"error": "Job not found", "code": "job_not_found"})
-    updates["updated_at"] = _now_iso()
-    sb = _sb()
-    resp = sb.table("saved_jobs").update(updates).eq("id", job_id).execute()
-    if not (resp.data or []):
-        raise JobError(404, {"error": "Job not found", "code": "job_not_found"})
+    now = _now_iso()
+    response_job: dict[str, Any] | None = None
+    if updates:
+        updates["updated_at"] = now
+        resp = _sb().table("saved_jobs").update(updates).eq("id", job_id).execute()
+        if not (resp.data or []):
+            raise JobError(404, {"error": "Job not found", "code": "job_not_found"})
+        response_job = resp.data[0]
+    if starred is not None:
+        if local_demo_store.active():
+            current = get_job(job_id)
+            if current is None:
+                raise JobError(404, {"error": "Job not found", "code": "job_not_found"})
+            metadata = _safe_source_metadata(current.get("source_metadata"))
+            metadata["starred"] = starred
+            resp = (
+                _sb()
+                .table("saved_jobs")
+                .update({"source_metadata": metadata, "updated_at": now})
+                .eq("id", job_id)
+                .execute()
+            )
+            if not (resp.data or []):
+                raise JobError(404, {"error": "Job not found", "code": "job_not_found"})
+            response_job = resp.data[0]
+        else:
+            try:
+                result = _rpc_object(
+                    _server_sb()
+                    .rpc(
+                        "set_saved_job_star",
+                        {
+                            "p_owner_id": _owner_id(),
+                            "p_job_id": job_id,
+                            "p_starred": starred,
+                            "p_now": now,
+                        },
+                    )
+                    .execute()
+                    .data
+                )
+            except Exception as exc:
+                raise JobError(
+                    503,
+                    {"error": "Job metadata storage is temporarily unavailable.", "code": "job_star_unavailable"},
+                ) from exc
+            if result.get("status") == "not_found":
+                raise JobError(404, {"error": "Job not found", "code": "job_not_found"})
+            if result.get("code") == "account_unavailable":
+                raise JobError(409, {"error": "Account is unavailable.", "code": "account_unavailable"})
+            rpc_job = result.get("job") if result.get("status") == "saved" else None
+            if not isinstance(rpc_job, dict):
+                raise JobError(
+                    500,
+                    {"error": "Job metadata storage returned invalid evidence.", "code": "job_star_failed"},
+                )
+            response_job = rpc_job
     # Return the full enriched job (with has_cover + cover_id) so the grid can
     # re-render the row, including its Generate/Open split button.
     job = get_job(job_id)
     cover_by_job = _covers_for_jobs([job_id]) if job else {}
     return _public_job(
-        job or resp.data[0],
+        job or response_job or {},
         full=True,
         has_cover=job_id in cover_by_job,
         cover_id=cover_by_job.get(job_id),
@@ -2540,19 +2721,69 @@ def update_job(job_id: str, patch: dict[str, Any]) -> dict[str, Any]:
 
 
 def delete_job(job_id: str) -> dict[str, Any]:
-    """Delete a saved job (RLS-scoped). Raises 404 if not owned/visible.
+    """Atomically delete an unused saved job without losing lineage.
 
-    The schema sets ``documents.job_id`` to NULL on delete (ON DELETE SET NULL),
-    so a job's tailored CVs / letters are NOT deleted — they're simply unlinked
-    and remain in the user's library.
+    Hosted deletion is owned by ``delete_saved_job_safely``: one database
+    transaction locks the owned job, checks documents, packets, attempts, and
+    review state, then deletes.  The local demo keeps its in-memory delete path
+    and mirrors the same rejection contract.
     """
-    if get_job(job_id) is None:
+    if local_demo_store.active():
+        if get_job(job_id) is None:
+            raise JobError(404, {"error": "Job not found", "code": "job_not_found"})
+        db = local_demo_store.db()
+        has_attempt = any(
+            row.get("owner_id", db.owner_id) == db.owner_id
+            and row.get("job_id") == job_id
+            for row in db.tables.setdefault("application_apply_attempts", [])
+        )
+        has_review = any(
+            row.get("owner_id", db.owner_id) == db.owner_id
+            and row.get("job_id") == job_id
+            for row in db.tables.setdefault("tailor_review_states", [])
+        )
+        if _linked_documents(job_id) or _raw_packet_rows(job_id) or has_attempt or has_review:
+            raise JobError(
+                409,
+                {
+                    "error": "This job has application history and cannot be deleted. Mark it closed instead.",
+                    "code": "job_has_application_history",
+                },
+            )
+        resp = db.table("saved_jobs").delete().eq("id", job_id).execute()
+        if not (resp.data or []):
+            raise JobError(404, {"error": "Job not found", "code": "job_not_found"})
+        return {"deleted": job_id}
+
+    response = auth_mod.user_supabase().rpc(
+        "delete_saved_job_safely",
+        {"p_job_id": job_id},
+    ).execute()
+    data = response.data
+    if isinstance(data, list):
+        result = data[0] if data and isinstance(data[0], dict) else {}
+    else:
+        result = data if isinstance(data, dict) else {}
+
+    status = result.get("status")
+    if status == "deleted" and str(result.get("deleted") or "") == job_id:
+        return {"deleted": job_id}
+    if status == "not_found":
         raise JobError(404, {"error": "Job not found", "code": "job_not_found"})
-    sb = _sb()
-    resp = sb.table("saved_jobs").delete().eq("id", job_id).execute()
-    if not (resp.data or []):
-        raise JobError(404, {"error": "Job not found", "code": "job_not_found"})
-    return {"deleted": job_id}
+    if result.get("code") == "job_has_application_history":
+        raise JobError(
+            409,
+            {
+                "error": "This job has application history and cannot be deleted. Mark it closed instead.",
+                "code": "job_has_application_history",
+            },
+        )
+    if result.get("code") == "account_unavailable":
+        raise JobError(
+            409,
+            {"error": "Account is unavailable.", "code": "account_unavailable"},
+        )
+    raise RuntimeError("safe saved-job delete returned an invalid response")
 
 
 def archive_packet(job_id: str, packet_id: str, *, now_iso: str) -> dict[str, Any]:
@@ -2828,6 +3059,60 @@ def confirm_cover_letter_review(
                 "code": "cover_letter_hash_required",
             },
         )
+    if not local_demo_store.active():
+        try:
+            result = _rpc_object(
+                _server_sb()
+                .rpc(
+                    "confirm_application_packet_cover_review",
+                    {
+                        "p_owner_id": _owner_id(),
+                        "p_job_id": job_id,
+                        "p_packet_id": packet_id,
+                        "p_cover_letter_hash": expected_hash,
+                        "p_now": now_iso,
+                    },
+                )
+                .execute()
+                .data
+            )
+        except Exception as exc:
+            raise JobError(
+                503,
+                {
+                    "error": "Cover-letter review storage is temporarily unavailable.",
+                    "code": "cover_letter_confirm_unavailable",
+                },
+            ) from exc
+        code = str(result.get("code") or "cover_letter_confirm_failed")
+        if result.get("status") == "confirmed" and isinstance(result.get("packet"), dict):
+            job = get_job(job_id)
+            packet = _public_packet(result["packet"], job=job, derive_stale=True)
+            return {
+                "packet_id": packet.get("id"),
+                "packet": packet,
+                "cover_letter_review_status": packet.get("cover_letter_review_status"),
+                "cover_letter_review_confirmed_at": packet.get("cover_letter_review_confirmed_at"),
+            }
+        if code in {"job_not_found", "packet_not_found"}:
+            label = "Job" if code == "job_not_found" else "Packet"
+            raise JobError(404, {"error": f"{label} not found", "code": code})
+        if code == "account_unavailable":
+            raise JobError(409, {"error": "Account is unavailable.", "code": code})
+        messages = {
+            "cover_letter_hash_mismatch": "The cover letter changed after this review prompt.",
+            "cover_letter_review_not_pending": "This packet is not waiting for cover-letter review.",
+            "packet_stale": "The packet changed before cover-letter review was confirmed.",
+        }
+        if code in messages:
+            body: dict[str, Any] = {"error": messages[code], "code": code}
+            if code == "packet_stale" and isinstance(result.get("stale_reasons"), list):
+                body["stale_reasons"] = result["stale_reasons"]
+            raise JobError(409, body)
+        raise JobError(
+            500,
+            {"error": "Cover-letter review storage returned invalid evidence.", "code": code},
+        )
     job = get_job(job_id)
     if job is None:
         raise JobError(404, {"error": "Job not found", "code": "job_not_found"})
@@ -2956,15 +3241,16 @@ def _rollback_document(doc_id: str, doc_type: str) -> None:
 def _linked_documents(job_id: str) -> list[dict]:
     """The caller's non-deleted documents linked to ``job_id`` (RLS-scoped)."""
     sb = _sb()
-    resp = (
-        sb.table("documents")
-        .select("id, type, name, yaml_blob, updated_at")
-        .eq("job_id", job_id)
-        .is_("deleted_at", "null")
-        .order("updated_at", desc=True)
-        .execute()
+    return _paged_rows(
+        lambda: (
+            sb.table("documents")
+            .select("id, type, name, yaml_blob, updated_at")
+            .eq("job_id", job_id)
+            .is_("deleted_at", "null")
+            .order("updated_at", desc=True)
+            .order("id", desc=True)
+        )
     )
-    return resp.data or []
 
 
 def _document_yaml_hash(doc_id: str, expected_type: str | None = None) -> str | None:
@@ -3003,23 +3289,124 @@ def _is_uuid_text(value: object) -> bool:
     return True
 
 
-def _packet_rows(job_id: str, *, job: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+def _bounded_batches(values: Iterable[str], *, size: int = PACKET_LINEAGE_BATCH_SIZE) -> Iterable[list[str]]:
+    """Yield deterministic PostgREST-safe batches.
+
+    UUID lists are placed in request URLs by PostgREST clients. Keeping every
+    filter bounded avoids oversized URLs while preserving a single RLS-scoped
+    query per batch.
+    """
+    ordered = sorted(set(values))
+    for start in range(0, len(ordered), size):
+        yield ordered[start : start + size]
+
+
+def _paged_rows(
+    query_factory: Callable[[], Any],
+    *,
+    page_size: int | None = None,
+) -> list[dict[str, Any]]:
+    """Execute a deterministic select in bounded PostgREST range pages.
+
+    Callers must supply a stable, unique final ordering column. The local demo
+    store intentionally has no range primitive; its process-local tables stay
+    small and retain the existing single-read behavior.
+    """
+    size = int(HIGH_CARDINALITY_PAGE_SIZE if page_size is None else page_size)
+    if size < 1:
+        raise ValueError("page_size must be positive")
+
+    first_query = query_factory()
+    if not callable(getattr(first_query, "range", None)):
+        return first_query.execute().data or []
+
+    rows: list[dict[str, Any]] = []
+    offset = 0
+    while True:
+        query = first_query if offset == 0 else query_factory()
+        page = query.range(offset, offset + size - 1).execute().data or []
+        rows.extend(page)
+        if len(page) < size:
+            return rows
+        offset += size
+
+
+def _document_hashes_for_ids(document_ids: Iterable[str]) -> dict[str, tuple[str, str]]:
+    """Load document type and canonical YAML hash in bounded RLS-scoped reads."""
+    wanted = {str(doc_id) for doc_id in document_ids if _is_uuid_text(doc_id)}
+    if not wanted:
+        return {}
+    hashes: dict[str, tuple[str, str]] = {}
+    if local_demo_store.active():
+        demo_row = local_demo_store.demo_cv_row()
+        demo_id = str((demo_row or {}).get("id") or "")
+        if demo_id in wanted:
+            hashes[demo_id] = ("cv", _content_hash((demo_row or {}).get("yaml_blob") or ""))
+    remaining = wanted - hashes.keys()
+    if not remaining:
+        return hashes
     sb = _sb()
-    try:
+    for batch in _bounded_batches(remaining):
         rows = (
-            sb.table("application_packets")
-            .select("*")
-            .eq("job_id", job_id)
-            .order("updated_at", desc=True)
+            sb.table("documents")
+            .select("id, type, yaml_blob")
+            .in_("id", batch)
+            .is_("deleted_at", "null")
             .execute()
             .data
             or []
+        )
+        for row in rows:
+            doc_id = str(row.get("id") or "")
+            doc_type = str(row.get("type") or "")
+            if doc_id and doc_type:
+                hashes[doc_id] = (doc_type, _content_hash(row.get("yaml_blob") or ""))
+    return hashes
+
+
+def _document_hash_from_snapshot(
+    document_hashes: dict[str, tuple[str, str]],
+    doc_id: str,
+    expected_type: str,
+) -> str | None:
+    snapshot = document_hashes.get(doc_id)
+    if snapshot is None or snapshot[0] != expected_type:
+        return None
+    return snapshot[1]
+
+
+def _packet_rows(job_id: str, *, job: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    sb = _sb()
+    try:
+        rows = _paged_rows(
+            lambda: (
+                sb.table("application_packets")
+                .select("*")
+                .eq("job_id", job_id)
+                .order("updated_at", desc=True)
+                .order("id", desc=True)
+            )
         )
     except Exception as exc:  # noqa: BLE001 - additive migration may not be applied locally
         if _demo_mode_enabled() and ("application_packets" in str(exc) or "PGRST" in str(exc)):
             return []
         raise
-    return [_public_packet(row, job=job, derive_stale=True) for row in rows]
+    linked_document_ids = {
+        str(row.get(column))
+        for row in rows
+        for column in ("source_cv_id", "tailored_cv_id", "cover_letter_id")
+        if row.get(column)
+    }
+    document_hashes = _document_hashes_for_ids(linked_document_ids)
+    return [
+        _public_packet(
+            row,
+            job=job,
+            derive_stale=True,
+            document_hashes=document_hashes,
+        )
+        for row in rows
+    ]
 
 
 def packet_lineage_for_documents(document_ids: Iterable[str]) -> dict[str, dict[str, Any]]:
@@ -3027,32 +3414,71 @@ def packet_lineage_for_documents(document_ids: Iterable[str]) -> dict[str, dict[
 
     The projection is RLS-scoped through the caller's Supabase client and never
     includes YAML blobs, review tokens, prompts, cookies, or auth material.
+    Only packets referencing one of the requested documents are read. Packet,
+    job, and document-hash reads use bounded batches. A single bulk document
+    snapshot replaces per-packet hash queries while preserving stale checks.
     """
     wanted = {str(doc_id) for doc_id in document_ids if _is_uuid_text(doc_id)}
     if not wanted:
         return {}
     try:
-        rows = (
-            _sb()
-            .table("application_packets")
-            .select("*")
-            .order("updated_at", desc=True)
-            .execute()
-            .data
-            or []
-        )
+        rows_by_id: dict[str, dict[str, Any]] = {}
+        sb = _sb()
+        for column in ("source_cv_id", "tailored_cv_id", "cover_letter_id"):
+            for batch in _bounded_batches(wanted):
+                role_rows = _paged_rows(
+                    lambda column=column, batch=batch: (
+                        sb.table("application_packets")
+                        .select("*")
+                        .in_(column, batch)
+                        .order("updated_at", desc=True)
+                        .order("id", desc=True)
+                    )
+                )
+                for row in role_rows:
+                    row_id = str(row.get("id") or "")
+                    if row_id and row_id not in rows_by_id:
+                        rows_by_id[row_id] = row
+        rows = list(rows_by_id.values())
     except Exception as exc:  # noqa: BLE001 - additive migration may not be applied locally
         if _demo_mode_enabled() and ("application_packets" in str(exc) or "PGRST" in str(exc)):
             return {}
         raise
-    jobs: dict[str, dict[str, Any] | None] = {}
+    job_ids = sorted({str(row.get("job_id") or "") for row in rows if row.get("job_id")})
+    jobs: dict[str, dict[str, Any] | None] = {job_id: None for job_id in job_ids}
+    if job_ids:
+        sb = _sb()
+        for batch in _bounded_batches(job_ids):
+            job_rows = (
+                sb.table("saved_jobs")
+                .select(
+                    "id, title, company, jd_text, jd_json, source_url, status, "
+                    "field, deadline, confidence, why_fit, created_at, updated_at, "
+                    "source_metadata, content_hash"
+                )
+                .in_("id", batch)
+                .execute()
+                .data
+                or []
+            )
+            jobs.update({str(job.get("id")): job for job in job_rows if job.get("id")})
+    linked_document_ids = {
+        str(row.get(column) or "")
+        for row in rows
+        for column in ("source_cv_id", "tailored_cv_id", "cover_letter_id")
+        if row.get(column)
+    }
+    document_hashes = _document_hashes_for_ids(linked_document_ids)
     out: dict[str, dict[str, Any]] = {}
-    ranks: dict[str, tuple[int, int, str]] = {}
+    ranks: dict[str, tuple[int, int, str, str]] = {}
     for row in rows:
         job_id = str(row.get("job_id") or "")
-        if job_id not in jobs:
-            jobs[job_id] = get_job(job_id) if job_id else None
-        public = _public_packet(row, job=jobs.get(job_id), derive_stale=True)
+        public = _public_packet(
+            row,
+            job=jobs.get(job_id),
+            derive_stale=True,
+            document_hashes=document_hashes,
+        )
         role_ids = (
             ("source_cv", row.get("source_cv_id")),
             ("tailored_cv", row.get("tailored_cv_id")),
@@ -3114,12 +3540,10 @@ def _packet_lineage_projection(
     }
 
 
-def _packet_lineage_rank(packet: dict[str, Any]) -> tuple[int, int, str]:
+def _packet_lineage_rank(packet: dict[str, Any]) -> tuple[int, int, str, str]:
     status = str(packet.get("status") or "")
     if status == "packet_created":
         status_rank = 3
-    elif status == "applied_external":
-        status_rank = 2
     elif status == "stale":
         status_rank = 1
     else:
@@ -3129,7 +3553,7 @@ def _packet_lineage_rank(packet: dict[str, Any]) -> tuple[int, int, str]:
     except (TypeError, ValueError):
         version = 0
     timestamp = str(packet.get("updated_at") or packet.get("created_at") or "")
-    return status_rank, version, timestamp
+    return status_rank, version, timestamp, str(packet.get("id") or "")
 
 
 def _public_packet(
@@ -3137,16 +3561,19 @@ def _public_packet(
     *,
     job: dict[str, Any] | None = None,
     derive_stale: bool = False,
+    document_hashes: dict[str, tuple[str, str]] | None = None,
 ) -> dict[str, Any]:
     doc_links = _packet_document_links(row)
-    stale_reasons = _packet_stale_reasons(row, job=job) if derive_stale else []
+    stale_reasons = (
+        _packet_stale_reasons(row, job=job, document_hashes=document_hashes)
+        if derive_stale
+        else []
+    )
     status = row.get("status")
     if row.get("archived_at") or status == "archived":
         status = "archived"
     elif stale_reasons:
         status = "stale"
-    elif job and job.get("status") == "applied":
-        status = "applied_external"
     return {
         "id": row.get("id"),
         "job_id": row.get("job_id"),
@@ -3180,13 +3607,22 @@ def _public_packet(
     }
 
 
-def _packet_stale_reasons(row: dict[str, Any], *, job: dict[str, Any] | None = None) -> list[str]:
+def _packet_stale_reasons(
+    row: dict[str, Any],
+    *,
+    job: dict[str, Any] | None = None,
+    document_hashes: dict[str, tuple[str, str]] | None = None,
+) -> list[str]:
     if row.get("archived_at") or row.get("status") == "archived":
         return []
     reasons: list[str] = []
     source_cv_id = str(row.get("source_cv_id") or "")
     expected_source_hash = row.get("source_cv_hash") or row.get("input_hash")
-    current_source_hash = _document_yaml_hash(source_cv_id, "cv") if source_cv_id else None
+    current_source_hash = (
+        _document_hash_from_snapshot(document_hashes, source_cv_id, "cv")
+        if source_cv_id and document_hashes is not None
+        else (_document_yaml_hash(source_cv_id, "cv") if source_cv_id else None)
+    )
     if not source_cv_id or current_source_hash is None:
         reasons.append("source_cv_missing")
     elif not expected_source_hash:
@@ -3201,10 +3637,11 @@ def _packet_stale_reasons(row: dict[str, Any], *, job: dict[str, Any] | None = N
     elif current_job_hash != expected_job_hash:
         reasons.append("job_description_stale")
     expected_tailored_hash = row.get("tailored_cv_hash") or row.get("output_hash")
+    tailored_cv_id = str(row.get("tailored_cv_id") or "")
     current_tailored_hash = (
-        _document_yaml_hash(str(row.get("tailored_cv_id") or ""), "cv")
-        if row.get("tailored_cv_id")
-        else None
+        _document_hash_from_snapshot(document_hashes, tailored_cv_id, "cv")
+        if tailored_cv_id and document_hashes is not None
+        else (_document_yaml_hash(tailored_cv_id, "cv") if tailored_cv_id else None)
     )
     if not row.get("tailored_cv_id") or current_tailored_hash is None:
         reasons.append("tailored_cv_missing")
@@ -3213,10 +3650,11 @@ def _packet_stale_reasons(row: dict[str, Any], *, job: dict[str, Any] | None = N
     elif current_tailored_hash != expected_tailored_hash:
         reasons.append("tailored_cv_stale")
     expected_letter_hash = row.get("cover_letter_hash")
+    cover_letter_id = str(row.get("cover_letter_id") or "")
     current_letter_hash = (
-        _document_yaml_hash(str(row.get("cover_letter_id") or ""), "cover_letter")
-        if row.get("cover_letter_id")
-        else None
+        _document_hash_from_snapshot(document_hashes, cover_letter_id, "cover_letter")
+        if cover_letter_id and document_hashes is not None
+        else (_document_yaml_hash(cover_letter_id, "cover_letter") if cover_letter_id else None)
     )
     if not row.get("cover_letter_id") or current_letter_hash is None:
         reasons.append("cover_letter_missing")
@@ -3229,15 +3667,27 @@ def _packet_stale_reasons(row: dict[str, Any], *, job: dict[str, Any] | None = N
 
 def _packet_document_links(row: dict[str, Any]) -> dict[str, str]:
     links: dict[str, str] = {}
+    job = row.get("job_id")
     source = row.get("source_cv_id")
     tailored = row.get("tailored_cv_id")
     letter = row.get("cover_letter_id")
+
+    def contextual_link(path: str, document_id: object, cv_id: object) -> str:
+        params = [("id", str(document_id))]
+        if job:
+            params.append(("job_id", str(job)))
+        if cv_id:
+            params.append(("cv_id", str(cv_id)))
+        if source:
+            params.append(("source_cv_id", str(source)))
+        return f"{path}?{urlencode(params)}"
+
     if source:
-        links["source_cv"] = f"/app?id={source}"
+        links["source_cv"] = contextual_link("/app", source, source)
     if tailored:
-        links["tailored_cv"] = f"/app?id={tailored}"
+        links["tailored_cv"] = contextual_link("/app", tailored, tailored)
     if letter:
-        links["cover_letter"] = f"/cover-letters?id={letter}"
+        links["cover_letter"] = contextual_link("/cover-letters", letter, tailored or source)
     return links
 
 
@@ -3312,15 +3762,15 @@ def _current_packet_for(
 
 def _raw_packet_rows(job_id: str) -> list[dict[str, Any]]:
     try:
-        return (
-            _sb()
-            .table("application_packets")
-            .select("*")
-            .eq("job_id", job_id)
-            .order("updated_at", desc=True)
-            .execute()
-            .data
-            or []
+        sb = _sb()
+        return _paged_rows(
+            lambda: (
+                sb.table("application_packets")
+                .select("*")
+                .eq("job_id", job_id)
+                .order("updated_at", desc=True)
+                .order("id", desc=True)
+            )
         )
     except Exception as exc:  # noqa: BLE001 - additive migration may not be applied locally
         if _demo_mode_enabled() and ("application_packets" in str(exc) or "PGRST" in str(exc)):
@@ -3465,6 +3915,7 @@ def record_cover_letter_packet_lineage(
     tailored_hash: str | None = None,
     cover_letter_hash: str | None = None,
     score_system_id: str | None = None,
+    review_id: str | None = None,
     now_iso: str,
 ) -> dict[str, Any] | None:
     """Persist selected-job lineage for standalone Cover Letters saves."""
@@ -3481,6 +3932,7 @@ def record_cover_letter_packet_lineage(
         tailored_hash=tailored_hash,
         cover_letter_hash=cover_letter_hash,
         score_system_id=score_system_id,
+        review_id=review_id,
         now_iso=now_iso,
     )
 
@@ -3556,6 +4008,59 @@ def _record_incomplete_packet_lineage(
         "packet_version": PACKET_VERSION,
         "updated_at": now_iso,
     }
+
+    if not local_demo_store.active():
+        try:
+            result = _rpc_object(
+                _server_sb()
+                .rpc(
+                    "merge_incomplete_application_packet",
+                    {
+                        "p_owner_id": _owner_id(),
+                        "p_payload": {
+                            **payload,
+                            "score_snapshot_present": isinstance(ats, dict),
+                        },
+                        "p_now": now_iso,
+                    },
+                )
+                .execute()
+                .data
+            )
+        except Exception as exc:
+            raise JobError(
+                503,
+                {
+                    "error": "Application packet storage is temporarily unavailable.",
+                    "code": "packet_storage_unavailable",
+                },
+            ) from exc
+        code = str(result.get("code") or "packet_lineage_failed")
+        packet = result.get("packet")
+        if result.get("status") in {"merged", "created", "archived"} and isinstance(packet, dict):
+            return _public_packet(packet, job=job, derive_stale=True)
+        if code == "account_unavailable":
+            raise JobError(409, {"error": "Account is unavailable.", "code": code})
+        if code == "packet_input_changed":
+            raise JobError(
+                409,
+                {
+                    "error": "Application inputs changed before packet lineage was stored.",
+                    "code": code,
+                },
+            )
+        not_found_messages = {
+            "job_not_found": "Job not found",
+            "source_cv_not_found": "CV not found",
+            "tailored_cv_not_found": "Tailored CV not found",
+            "cover_letter_not_found": "Cover letter not found",
+        }
+        if code in not_found_messages:
+            raise JobError(404, {"error": not_found_messages[code], "code": code})
+        raise JobError(
+            500,
+            {"error": "Application packet storage returned invalid evidence.", "code": code},
+        )
 
     active_rows = [
         row
@@ -3690,21 +4195,38 @@ def _ensure_pending_packet_row(
         "packet_version": packet_version,
         "updated_at": now_iso,
     }
-    archived_partial_rows = _archive_active_packet_rows(
-        job_id,
-        source_cv_id,
-        now_iso=now_iso,
-        partial_only=True,
-    )
     try:
-        inserted = _insert_packet_payload(_server_sb(), payload)
-    except Exception:
-        _restore_archived_packets(archived_partial_rows)
-        raise
-    if not inserted:
-        _restore_archived_packets(archived_partial_rows)
-        raise JobError(500, {"error": "Failed to save pending application packet.", "code": "packet_insert_failed"})
-    return _public_packet(inserted[0], job=job, derive_stale=True)
+        response = _server_sb().rpc(
+            "replace_active_application_packet",
+            {
+                "p_owner_id": _owner_id(),
+                "p_payload": payload,
+                "p_now": now_iso,
+            },
+        ).execute().data
+    except Exception as exc:
+        raise JobError(
+            503,
+            {
+                "error": "Application packet storage is temporarily unavailable.",
+                "code": "packet_storage_unavailable",
+            },
+        ) from exc
+    result = response[0] if isinstance(response, list) and response else response
+    if not isinstance(result, dict):
+        raise JobError(500, {"error": "Invalid packet storage evidence.", "code": "packet_insert_failed"})
+    if result.get("status") != "created":
+        raise JobError(
+            409 if result.get("code") == "account_unavailable" else 500,
+            {
+                "error": "Failed to save pending application packet.",
+                "code": result.get("code") or "packet_insert_failed",
+            },
+        )
+    inserted = result.get("packet")
+    if not isinstance(inserted, dict):
+        raise JobError(500, {"error": "Invalid packet storage evidence.", "code": "packet_insert_failed"})
+    return _public_packet(inserted, job=job, derive_stale=True)
 
 
 def _public_job(

@@ -1,12 +1,13 @@
 """Static contracts for the production container security boundary."""
 
 from pathlib import Path
+import re
 
 
 ROOT = Path(__file__).resolve().parents[1]
 WOLFI = (
     "cgr.dev/chainguard/wolfi-base@sha256:"
-    "02dab76bd852a70556b5b2002195c8a5fdab77d323c433bf6642aab080489795"
+    "003627df3c1e1bba0c4116afcddb314aca9594ee2328c7e876a8081a6c988b2e"
 )
 GO_BUILDER = (
     "golang:1.26.5-alpine3.23@sha256:"
@@ -64,9 +65,15 @@ def test_caddy_is_source_built_with_pinned_go_caddy_and_grpc():
     assert dockerfile.count(f"FROM {WOLFI}") == 1
     assert "ARG CADDY_VERSION=v2.11.4" in dockerfile
     assert "ARG GRPC_VERSION=v1.82.1" in dockerfile
+    # Caddy v2.11.4 pulls golang.org/x/text v0.37.0 (CVE-2026-56852, HIGH).
+    # Go resolves to the highest required version, so the explicit require
+    # lifts it. Without this the Trivy gate fails the release.
+    assert "ARG XTEXT_VERSION=v0.39.0" in dockerfile
     assert '_ "github.com/caddyserver/caddy/v2/modules/standard"' in dockerfile
     assert '-require="github.com/caddyserver/caddy/v2@${CADDY_VERSION}"' in dockerfile
     assert '-require="google.golang.org/grpc@${GRPC_VERSION}"' in dockerfile
+    assert '-require="golang.org/x/text@${XTEXT_VERSION}"' in dockerfile
+    assert 'grep -Fqx "golang.org/x/text ${XTEXT_VERSION}"' in dockerfile
     assert "go version -m /tmp/caddy" in dockerfile
     assert "caddy-build-modules.txt" in dockerfile
     assert "caddy-build-info.txt" in dockerfile
@@ -83,13 +90,13 @@ def test_compose_drops_privileges_and_builds_the_reviewed_caddy():
     assert "dockerfile: Dockerfile.caddy" in compose
     assert "image: ${ONEPAGER_APP_IMAGE:-onepager:dev}" in compose
     assert "image: ${ONEPAGER_CADDY_IMAGE:-onepager-caddy:2.11.4}" in compose
-    assert compose.count("pull_policy: never") == 3
+    assert compose.count("pull_policy: never") == 4
     assert "caddy:2.10.2" not in compose
-    assert compose.count("read_only: true") == 3
-    assert compose.count("no-new-privileges:true") == 3
-    assert compose.count("cap_drop:") == 3
-    assert compose.count("- ALL") == 3
-    assert compose.count("init: true") == 3
+    assert compose.count("read_only: true") == 4
+    assert compose.count("no-new-privileges:true") == 4
+    assert compose.count("cap_drop:") == 4
+    assert compose.count("- ALL") == 4
+    assert compose.count("init: true") == 4
     assert 'user: "999:999"' in compose
     assert 'user: "65532:65532"' in compose
     assert "/tmp:rw,noexec,nosuid,nodev" in compose
@@ -100,10 +107,38 @@ def test_release_compose_removes_builds_and_requires_immutable_images():
     release = _read("docker-compose.release.yml")
 
     assert release.count("build: !reset null") == 2
-    assert release.count("${ONEPAGER_APP_IMAGE:?") == 2
+    assert release.count("${ONEPAGER_APP_IMAGE:?") == 3
     assert release.count("${ONEPAGER_CADDY_IMAGE:?") == 1
     assert "onepager:dev" not in release
     assert "onepager-caddy:2.11.4" not in release
+
+
+def test_workflow_pull_policy_assertions_match_the_compose_service_count():
+    """Keep the CI/deploy pull_policy gates tied to the real service list.
+
+    Every prod service pins `pull_policy: never` so a release can never fall
+    back to a mutable tag. Both workflows re-assert that count against the
+    rendered release config — but as a literal, so adding the pdf-cleanup
+    worker made docker-compose.yml carry four while ci.yml still demanded
+    three. `test` fails with no output under `set -euo pipefail`, so CI showed
+    nothing but "exit code 1". ci.yml now derives the number; this pins the
+    remaining literals in deploy.yml to the compose file so the next added
+    service fails here, locally, instead of only in CI.
+    """
+    expected = _read("docker-compose.yml").count("pull_policy: never")
+    assert expected >= 1
+
+    pattern = re.compile(
+        r"grep -c 'pull_policy: never'[^\n]*\n(?:[^\n]*\n)?\s*\)\"\s*=\s*\"([^\"]+)\""
+    )
+    checked = 0
+    for path in (".github/workflows/ci.yml", ".github/workflows/deploy.yml"):
+        for literal in pattern.findall(_read(path)):
+            checked += 1
+            if literal.startswith("$"):
+                continue  # derived from the live service list
+            assert literal == str(expected), (path, literal, expected)
+    assert checked >= 3, f"expected at least 3 pull_policy gates, found {checked}"
 
 
 def test_ci_and_deploy_fail_closed_on_container_cves_and_retain_reports():
@@ -270,3 +305,130 @@ def test_deploy_uses_the_scanned_immutable_images_without_rebuilding():
     assert "up -d --no-build --pull never --remove-orphans" in remote_deploy
     assert "unset COMPOSE_FILE" in remote_deploy
     assert "docker compose -p onepager --profile prod --env-file .env build" not in remote_deploy
+    pdf_cleanup_preflight = "tools/editor/pdf_cleanup_worker.py --probe"
+    expected_pdf_cleanup_command = (
+        '"$EXPECTED_APP_IMAGE_ID" \\\n'
+        "              " + pdf_cleanup_preflight
+    )
+    assert remote_deploy.count(pdf_cleanup_preflight) == 1
+    assert '--env-file "$PDF_PROBE_ENV"' in remote_deploy
+    assert "--entrypoint python3" in remote_deploy
+    assert expected_pdf_cleanup_command in remote_deploy
+    assert remote_deploy.index(pdf_cleanup_preflight) < remote_deploy.index(
+        "SWAP_STARTED=1"
+    )
+
+
+def test_deploy_blocks_schema_incompatible_rollback_and_requires_maintenance():
+    workflow = _read(".github/workflows/deploy.yml")
+    remote_deploy = workflow.split("- name: Deploy over SSH", 1)[1]
+
+    assert "forward_only_maintenance:" in workflow
+    assert "required: true" in workflow
+    assert "default: false" in workflow
+    assert (
+        "FORWARD_ONLY_MAINTENANCE_ACK: "
+        "${{ inputs.forward_only_maintenance }}"
+    ) in workflow
+    assert "tests/test_schema_compatibility_probe.py" in workflow
+    assert "tests/test_release_schema_contract.py" in workflow
+    assert remote_deploy.count("docker ps -aq --latest") == 2
+
+    stop_boundary = remote_deploy.split("stop_release_boundary() {", 1)[1].split(
+        "verify_stack() {", 1
+    )[0]
+    for service in ("caddy", "app", "purge-worker", "pdf-cleanup-worker"):
+        assert service in stop_boundary
+    assert "onepager-erasure-candidate" in stop_boundary
+    assert "onepager-erasure-keeper" in stop_boundary
+    assert "docker ps -q" in stop_boundary
+    assert "--latest" not in stop_boundary
+
+    contract_gate = remote_deploy.split('candidate_schema_contract="$(', 1)[1]
+    assert 'describe_schema_contract "$EXPECTED_APP_IMAGE_ID"' in contract_gate
+    assert '[ -n "$PREVIOUS_CADDY_IMAGE_ID" ]' in contract_gate
+    assert '[ "$previous_release_ambiguous" = "0" ]' in contract_gate
+    assert (
+        '[ "$previous_schema_contract" = "$candidate_schema_contract" ]'
+        in contract_gate
+    )
+    assert (
+        '&& probe_schema_contract "$PREVIOUS_APP_IMAGE_ID"; then'
+        in contract_gate
+    )
+    previous_probe = 'probe_schema_contract "$PREVIOUS_APP_IMAGE_ID"'
+    assert contract_gate.index(previous_probe) < contract_gate.index(
+        "ROLLBACK_SCHEMA_COMPATIBLE=1"
+    )
+
+    candidate_probe = 'probe_schema_contract "$EXPECTED_APP_IMAGE_ID"'
+    incompatible_gate = contract_gate.split(
+        'if [ -n "$PREVIOUS_APP_IMAGE_ID" ]', 2
+    )[2].split('rm -f "$SCHEMA_PROBE_ENV"', 1)[0]
+    assert contract_gate.index(candidate_probe) < contract_gate.index(
+        "stop_release_boundary"
+    )
+    assert incompatible_gate.index("stop_release_boundary") < (
+        incompatible_gate.index(
+            'if [ "$FORWARD_ONLY_MAINTENANCE_ACK" != "true" ]; then'
+        )
+    )
+    assert (
+        "Previous release boundary was running; it is now drained"
+        in incompatible_gate
+    )
+
+    pdf_probe = "tools/editor/pdf_cleanup_worker.py --probe"
+    assert contract_gate.index(candidate_probe) < contract_gate.index(pdf_probe)
+    assert contract_gate.index(candidate_probe) < contract_gate.index(
+        "SWAP_STARTED=1"
+    )
+
+    cleanup = remote_deploy.split("cleanup_and_restore_on_failure() {", 1)[1].split(
+        "trap 'status=$?;", 1
+    )[0]
+    rollback_guard = 'if [ "${ROLLBACK_SCHEMA_COMPATIBLE:-0}" = "1" ]; then'
+    previous_tag = 'docker tag "$PREVIOUS_APP_IMAGE_ID" onepager:dev'
+    assert cleanup.count(previous_tag) == 1
+    assert cleanup.index("stop_release_boundary") < cleanup.index(rollback_guard)
+    assert cleanup.index(rollback_guard) < cleanup.index(previous_tag)
+    assert "start_candidate_best_effort" not in remote_deploy
+    assert "candidate ingress and workers stopped" in cleanup
+    assert "never" in cleanup and "incompatible previous app" in cleanup
+
+    probe_function = remote_deploy.split("probe_schema_contract() {", 1)[1].split(
+        "stop_release_boundary() {", 1
+    )[0]
+    assert '--env-file "$SCHEMA_PROBE_ENV"' in probe_function
+    assert ".env.docker" not in probe_function
+    assert "--entrypoint python3" in probe_function
+    assert "SUPABASE_URL" in remote_deploy
+    assert "SUPABASE_SERVICE_ROLE_KEY" in remote_deploy
+    assert remote_deploy.count('> "$SCHEMA_PROBE_ENV"') == 1
+    assert '>> "$SCHEMA_PROBE_ENV"' not in remote_deploy
+    assert 'test "$pdf_r2_present" = "4"' in remote_deploy
+    assert 'test "$pdf_r2_present" = "0"' in remote_deploy
+    assert "ONEPAGER_R2_NEVER_USED 1" in remote_deploy
+
+    directory_swap = remote_deploy.split("ERASURE_CANDIDATE_READY=1", 1)[1]
+    assert directory_swap.index('if ! mv "$NEXT_DIR" "$APP_DIR"; then') < (
+        directory_swap.index("SWAP_STARTED=1")
+    )
+
+
+def test_deploy_docs_define_the_forward_only_schema_boundary():
+    deploy = _read("DEPLOY.md")
+
+    assert "forward_only_maintenance=true" in deploy
+    assert "one read-only OpenAPI `GET /rest/v1/`" in deploy
+    assert "exact schema-contract descriptor" in deploy
+    assert "Keep the entire previous release stopped" in deploy
+    assert "release_schema_contract()" in deploy
+    assert "failed candidate ingress is never exposed" in deploy
+    assert "Do not restore the previous image" in deploy
+    manual = deploy.split("**Manually on the VPS:**", 1)[1].split(
+        "**Or via GitHub Actions**", 1
+    )[0]
+    assert "compose_env_to_docker.py --get .env SUPABASE_URL" in manual
+    assert "sed -n 's/^SUPABASE_URL=" not in manual
+    assert "fail-closed no-op" in deploy

@@ -72,13 +72,21 @@ class TestLocalDemoJobsStore:
         assert bad.status_code == 400
         assert bad.get_json()["code"] == "bad_starred"
 
-        status = client.post(f"/api/jobs/{job_id}/status", json={"status": "applied"}, headers=headers)
+        unverified = client.post(
+            f"/api/jobs/{job_id}/status",
+            json={"status": "applied"},
+            headers=headers,
+        )
+        assert unverified.status_code == 400
+        assert unverified.get_json()["code"] == "bad_status"
+
+        status = client.post(f"/api/jobs/{job_id}/status", json={"status": "open"}, headers=headers)
         assert status.status_code == 200
 
         detail = client.get(f"/api/jobs/{job_id}", headers=headers).get_json()
         detail_job = detail.get("job") or detail
         assert detail_job["starred"] is True
-        assert detail_job["status"] == "applied"
+        assert detail_job["status"] == "open"
 
         deleted = client.delete(f"/api/jobs/{job_id}", headers=headers)
         assert deleted.status_code == 200
@@ -283,6 +291,23 @@ class TestDemoKeyWriteSeam:
         assert res.status_code == 200, res.get_data(as_text=True)[:200]
         assert res.get_json().get("deleted") is False  # nothing durably stored
 
+    def test_demo_key_post_rejects_before_live_provider_validation(self, demo_client, monkeypatch):
+        import llm_gateway
+
+        def forbidden_validation(*_args, **_kwargs):
+            raise AssertionError("demo key validation escaped to a live provider")
+
+        monkeypatch.setattr(llm_gateway, "validate_provider_key", forbidden_validation)
+        client, headers = demo_client
+        response = client.post(
+            "/api/key",
+            json={"provider": "anthropic", "key": "sk-ant-demo-value-not-used"},
+            headers=headers,
+        )
+
+        assert response.status_code == 400
+        assert response.get_json()["code"] == "demo_mode_key_not_stored"
+
     def test_demo_save_key_short_circuits_without_supabase(self, server_module):
         import local_demo_store
         import llm_gateway
@@ -300,6 +325,189 @@ class TestDemoKeyWriteSeam:
                 llm_gateway.save_key(auth_mod.LOCAL_DEMO_OWNER_ID, "anthropic", "sk-ant-demo-abcd1234")
             assert excinfo.value.status == 400
             assert excinfo.value.payload["code"] == "demo_mode_key_not_stored"
+
+
+class TestDemoPassiveReadIsolation:
+    """Ordinary demo shell polling must never create an external DB client."""
+
+    def test_demo_cv_list_does_not_call_onboarding_rpc(self, demo_client, monkeypatch):
+        import auth as auth_mod
+
+        calls = []
+
+        def forbidden_supabase():
+            calls.append("user_supabase")
+            raise AssertionError("local demo escaped to Supabase")
+
+        monkeypatch.setattr(auth_mod, "user_supabase", forbidden_supabase)
+        client, headers = demo_client
+        response = client.get("/api/cvs", headers=headers)
+
+        assert response.status_code == 200
+        assert response.get_json()["count"] >= 1
+        assert calls == []
+
+    def test_demo_key_and_extract_status_are_offline_and_honest(self, demo_client, monkeypatch):
+        import auth as auth_mod
+
+        calls = []
+
+        def forbidden_supabase():
+            calls.append("user_supabase")
+            raise AssertionError("local demo escaped to Supabase")
+
+        monkeypatch.setattr(auth_mod, "user_supabase", forbidden_supabase)
+        client, headers = demo_client
+
+        key_response = client.get("/api/key", headers=headers)
+        extract_response = client.get("/api/extract/status", headers=headers)
+        jobs_response = client.get("/api/jobs", headers=headers)
+
+        assert key_response.status_code == 200
+        key_status = key_response.get_json()
+        assert key_status["demo"] is True
+        assert key_status["managed_credits_remaining"] == 0
+        assert all(not status["connected"] for status in key_status["providers"].values())
+        assert extract_response.status_code == 200
+        extract_status = extract_response.get_json()
+        assert extract_status["ai_available"] is True
+        assert extract_status["managed_credits_remaining"] == 0
+        assert jobs_response.status_code == 200
+        assert jobs_response.get_json() == {"jobs": [], "count": 0}
+        assert calls == []
+
+    def test_demo_usage_audit_and_artifact_proof_never_escape_process(
+        self, server_module, monkeypatch
+    ):
+        import apply_service
+        import auth as auth_mod
+        import llm_gateway
+        import pdf_store
+        from flask import g
+
+        monkeypatch.setenv("ONEPAGER_DEMO_MODE", "true")
+
+        def forbidden(*_args, **_kwargs):
+            raise AssertionError("demo request escaped to an external service")
+
+        monkeypatch.setattr(auth_mod, "user_supabase", forbidden)
+        monkeypatch.setattr(pdf_store, "persisted_cv_content_hash", forbidden)
+        monkeypatch.setattr(pdf_store, "r2_object_exists", forbidden)
+
+        with server_module.app.test_request_context("/api/polish/bullet", method="POST"):
+            g.owner_id = auth_mod.LOCAL_DEMO_OWNER_ID
+            llm_gateway.log_byo_usage("polish_bullet")
+            assert apply_service._fresh_pdf_artifact_evidence(
+                {
+                    "id": str(uuid.uuid4()),
+                    "type": "cv",
+                    "yaml_blob": "name: Demo\n",
+                },
+                require_one_page=True,
+            ) is None
+
+    def test_demo_pdf_delivery_ignores_ambient_r2_configuration(
+        self, demo_client, server_module, monkeypatch
+    ):
+        import cover_letter_service as cl_service
+        import pdf_store
+
+        letter_id = str(uuid.uuid4())
+        row = {"id": letter_id, "name": "Demo letter", "updated_at": None}
+
+        def forbidden(*_args, **_kwargs):
+            raise AssertionError("demo PDF build escaped to R2")
+
+        monkeypatch.setattr(pdf_store, "r2_enabled", lambda: True)
+        monkeypatch.setattr(pdf_store, "build_cover_letter_pdf", forbidden)
+        monkeypatch.setattr(pdf_store, "build_cv_pdf", forbidden)
+        monkeypatch.setattr(cl_service, "document_by_id", lambda *_args: row)
+        monkeypatch.setattr(cl_service, "normalized_blob_for_row", lambda _row: {"body": "Hello"})
+        monkeypatch.setattr(cl_service, "build_render_doc", lambda *_args, **_kwargs: {"body": "Hello"})
+        monkeypatch.setattr(server_module, "_sender_identity_for_cover", lambda _blob: ("Demo", None, None))
+        monkeypatch.setattr(
+            server_module,
+            "_authorized_letter_stream",
+            lambda *_args, **_kwargs: server_module.jsonify({"streamed": True}),
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_authorized_cv_stream",
+            lambda *_args, **_kwargs: server_module.jsonify({"cv_streamed": True}),
+        )
+
+        client, headers = demo_client
+        response = client.get(f"/api/cover-letter/{letter_id}/build", headers=headers)
+        cv_response = client.post("/api/build", json={}, headers=headers)
+
+        assert response.status_code == 200
+        assert response.get_json() == {"streamed": True}
+        assert cv_response.status_code == 200
+        assert cv_response.get_json() == {"cv_streamed": True}
+
+
+class TestDemoPrimaryCvConcurrency:
+    def test_primary_cv_materializes_once_under_concurrent_shell_boot(
+        self, server_module, monkeypatch
+    ):
+        from concurrent.futures import ThreadPoolExecutor
+
+        import local_demo_store
+
+        local_demo_store.reset()
+        seed_path = server_module._local_demo_seed_cv_path()
+
+        class SlowSeedPath:
+            stem = seed_path.stem
+
+            @staticmethod
+            def read_text(*, encoding):
+                time.sleep(0.02)
+                return seed_path.read_text(encoding=encoding)
+
+        monkeypatch.setattr(server_module, "_local_demo_seed_cv_path", lambda: SlowSeedPath())
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            rows = list(pool.map(lambda _index: server_module._local_demo_cv_store(), range(32)))
+
+        stored = [
+            row for row in local_demo_store.db().tables.get("documents", [])
+            if row.get("id") == server_module.LOCAL_DEMO_CV_ID
+        ]
+        assert len(stored) == 1
+        assert all(row is stored[0] for row in rows)
+
+    def test_primary_cv_materialization_repairs_legacy_duplicate_sentinel_rows(
+        self, server_module
+    ):
+        import local_demo_store
+
+        local_demo_store.reset()
+        table = local_demo_store.db().table("documents")
+        table.rows.extend(
+            [
+                {
+                    "id": server_module.LOCAL_DEMO_CV_ID,
+                    "type": "cv",
+                    "yaml_blob": "name: Old demo\n",
+                    "updated_at": None,
+                },
+                {
+                    "id": server_module.LOCAL_DEMO_CV_ID,
+                    "type": "cv",
+                    "yaml_blob": "name: Saved demo\n",
+                    "updated_at": "2026-08-01T20:00:00+00:00",
+                },
+            ]
+        )
+
+        selected = server_module._local_demo_cv_store()
+        remaining = [
+            row for row in table.rows
+            if row.get("id") == server_module.LOCAL_DEMO_CV_ID
+        ]
+
+        assert selected["yaml_blob"] == "name: Saved demo\n"
+        assert remaining == [selected]
 
 
 class TestStorageErrorContract:

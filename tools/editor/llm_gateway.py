@@ -196,6 +196,11 @@ def _stored_key_row(provider: str = "anthropic") -> dict | None:
     caller's own row. The provider is normalized (``google`` → ``gemini``) so a
     lookup always hits the single canonical row.
     """
+    if local_demo_store.active():
+        # The reserved demo owner never has durable BYO keys. Its alg:none
+        # token cannot authorize against Supabase, so even a passive lookup is
+        # both misleading and a source of hanging external sockets.
+        return None
     sb = auth_mod.user_supabase()
     resp = (
         sb.table("user_llm_keys")
@@ -287,10 +292,28 @@ def key_status_all() -> dict:
     managed-credit count. RLS scopes the row read to the caller. Only the
     non-secret ``last4`` hint is exposed — never any ciphertext.
     """
+    if local_demo_store.active():
+        # Demo AI uses the offline StubLLMClient through resolve_llm(); it has
+        # no stored keys or spendable managed credits. Keep passive status
+        # reads deterministic and entirely process-local.
+        providers = {}
+        for p in SUPPORTED_PROVIDERS:
+            spec = provider_spec(p)
+            providers[p] = {
+                "connected": False,
+                "last4": None,
+                "auth_type": spec.auth_type,
+            }
+            if spec.auth_type == "none":
+                providers[p]["available"] = False
+        return {
+            "providers": providers,
+            "managed_credits_remaining": 0,
+            "demo": True,
+        }
+
     sb = auth_mod.user_supabase()
-    rows = (
-        sb.table("user_llm_keys").select("provider, last4").execute().data or []
-    )
+    rows = sb.table("user_llm_keys").select("provider, last4").execute().data or []
     by_provider = {
         canonical_provider(r.get("provider")): {
             "connected": True,
@@ -324,6 +347,10 @@ def key_status_all() -> dict:
 
 def _managed_credits_remaining() -> int:
     """The caller's remaining managed credits (0 if no profile row)."""
+    if local_demo_store.active():
+        # Demo generation is a local stub and must never inspect or spend a
+        # real tenant's credit ledger.
+        return 0
     sb = auth_mod.user_supabase()
     resp = (
         sb.table("profiles")
@@ -460,6 +487,10 @@ def log_byo_usage(kind: str, provider: str = "anthropic") -> None:
     into the immutable table. Best-effort: a logging failure must not fail the
     user's generation.
     """
+    if demo_mode_enabled():
+        # Demo generations use StubLLMClient and spend no key or credit. They
+        # are neither BYO usage nor a reason to contact the audit database.
+        return
     try:
         sb = auth_mod.user_supabase()
         sb.rpc(

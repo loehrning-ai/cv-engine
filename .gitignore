@@ -20,6 +20,9 @@ htmlcov/
 .venv/
 venv/
 env/
+# CI builds this one at the repo root from requirements-browser.lock, so anyone
+# replicating the browser job locally would otherwise see it as untracked.
+.venv-browser/
 
 # Editor
 .vscode/

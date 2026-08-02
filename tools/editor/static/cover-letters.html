@@ -15,7 +15,7 @@
 __CHROME_TOPBAR__
 
     <main class="cl-main">
-      <section class="tool-page-head" aria-labelledby="letters-page-heading">
+      <section class="tool-page-head application-studio-head" aria-labelledby="letters-page-heading">
         <div>
           <h1 id="letters-page-heading" class="tool-page-title" data-i18n="cl.title">Cover letters</h1>
           <p class="tool-page-sub muted" data-i18n="cl.page.sub">
@@ -26,6 +26,43 @@ __CHROME_TOPBAR__
           <span class="tool-badge tool-badge-doc" data-i18n="lib.filter.cover">Cover letters</span>
           <span class="tool-badge tool-badge-counter" data-i18n="cl.status.editable">Editable drafts</span>
         </div>
+        <nav id="cl-lifecycle" class="application-lifecycle" aria-label="Application lifecycle"
+             data-local-aria-en="Application lifecycle" data-local-aria-de="Bewerbungsablauf"
+             data-current-stage="cv-letter">
+          <ol>
+            <li data-lifecycle-stage="job">
+              <a id="cl-flow-job" href="/jobs">
+                <span class="application-step-number" aria-hidden="true">1</span>
+                <span data-local-en="Job" data-local-de="Job">Job</span>
+              </a>
+            </li>
+            <li data-lifecycle-stage="source-cv">
+              <a id="cl-flow-source" href="/app">
+                <span class="application-step-number" aria-hidden="true">2</span>
+                <span data-local-en="Source CV" data-local-de="Quell-Lebenslauf">Source CV</span>
+              </a>
+            </li>
+            <li data-lifecycle-stage="review">
+              <a id="cl-flow-review" href="/tailor">
+                <span class="application-step-number" aria-hidden="true">3</span>
+                <span data-local-en="Review" data-local-de="Prüfung">Review</span>
+              </a>
+            </li>
+            <li class="is-current" data-lifecycle-stage="cv-letter">
+              <span aria-current="step">
+                <span class="application-step-number" aria-hidden="true">4</span>
+                <span data-local-en="CV + letter" data-local-de="Lebenslauf + Anschreiben">CV + letter</span>
+              </span>
+            </li>
+            <li data-lifecycle-stage="ready">
+              <span aria-disabled="true">
+                <span class="application-step-number" aria-hidden="true">5</span>
+                <span data-local-en="Ready" data-local-de="Bereit">Ready</span>
+              </span>
+            </li>
+          </ol>
+          <p id="cl-flow-context" class="application-lifecycle-context muted" aria-live="polite"></p>
+        </nav>
       </section>
 
       <!-- Left: generator form -->
@@ -99,6 +136,12 @@ __CHROME_TOPBAR__
             <button id="cl-preview-toggle" type="button" class="cl-btn" hidden aria-controls="cl-preview" aria-expanded="false">
               <span data-icon="eye" data-icon-size="13"></span><span data-i18n="cl.preview">Preview</span>
             </button>
+            <a id="cl-back-application" class="cl-btn" href="/jobs" hidden
+               data-local-aria-en="Back to application readiness"
+               data-local-aria-de="Zurück zur Bewerbungsbereitschaft">
+              <span data-icon="arrow-left" data-icon-size="13" aria-hidden="true"></span>
+              <span data-local-en="Back to application" data-local-de="Zurück zur Bewerbung">Back to application</span>
+            </a>
           </div>
         </div>
         <section id="cl-packet-lineage" class="cl-packet-lineage" aria-label="Application packet lineage" data-i18n-attr="aria-label:cl.packet.lineage_aria" hidden>
@@ -116,10 +159,62 @@ __CHROME_TOPBAR__
         <textarea id="cl-body" class="cl-body" name="cover_letter_body" autocomplete="off" spellcheck="true" disabled
                   aria-label="Cover letter body" data-i18n-attr="aria-label:cl.body.aria,placeholder:cl.body.placeholder"
                   placeholder="Your generated letter appears here and stays editable."></textarea>
-        <iframe id="cl-preview" class="cl-preview" title="Cover letter preview" data-i18n-attr="title:cl.preview_title" hidden></iframe>
         <div class="cl-result-foot">
           <span id="cl-wordcount" class="muted"></span>
         </div>
+        <details id="cl-envelope" class="cl-envelope" hidden>
+          <summary>
+            <span data-local-en="Letter details" data-local-de="Anschreibendetails">Letter details</span>
+            <span class="cl-envelope-summary-hint muted"
+                  data-local-en="Recipient, subject and enclosures"
+                  data-local-de="Empfänger, Betreff und Anlagen">Recipient, subject and enclosures</span>
+          </summary>
+          <fieldset id="cl-envelope-fields" disabled aria-describedby="cl-envelope-hint">
+            <legend class="sr-only"
+                    data-local-en="Editable cover-letter envelope"
+                    data-local-de="Bearbeitbare Anschreiben-Metadaten">Editable cover-letter envelope</legend>
+            <div class="cl-letter-detail-grid">
+              <label>
+                <span data-local-en="Recipient" data-local-de="Empfänger">Recipient</span>
+                <input id="cl-envelope-recipient" class="cl-input" type="text" autocomplete="off" maxlength="500" data-envelope-field="recipient">
+              </label>
+              <label>
+                <span data-local-en="Company" data-local-de="Unternehmen">Company</span>
+                <input id="cl-envelope-company" class="cl-input" type="text" autocomplete="organization" maxlength="500" data-envelope-field="company">
+              </label>
+              <label>
+                <span data-local-en="Role" data-local-de="Position">Role</span>
+                <input id="cl-envelope-role" class="cl-input" type="text" autocomplete="off" maxlength="500" data-envelope-field="role">
+              </label>
+              <label>
+                <span data-local-en="Tone" data-local-de="Ton">Tone</span>
+                <input id="cl-envelope-tone" class="cl-input" type="text" autocomplete="off" maxlength="200" data-envelope-field="tone">
+              </label>
+              <label class="cl-envelope-wide">
+                <span data-local-en="Subject" data-local-de="Betreff">Subject</span>
+                <input id="cl-envelope-subject" class="cl-input" type="text" autocomplete="off" maxlength="500" data-envelope-field="subject">
+              </label>
+              <label class="cl-envelope-wide">
+                <span data-local-en="Salutation" data-local-de="Anrede">Salutation</span>
+                <input id="cl-envelope-salutation" class="cl-input" type="text" autocomplete="off" maxlength="500" data-envelope-field="salutation">
+              </label>
+              <label class="cl-envelope-wide">
+                <span data-local-en="Closing" data-local-de="Grußformel">Closing</span>
+                <input id="cl-envelope-closing" class="cl-input" type="text" autocomplete="off" maxlength="500" data-envelope-field="closing">
+              </label>
+              <label class="cl-envelope-wide">
+                <span data-local-en="Attachments — one per line" data-local-de="Anlagen — eine pro Zeile">Attachments — one per line</span>
+                <textarea id="cl-envelope-attachments" class="cl-textarea cl-envelope-attachments" rows="3" maxlength="2000" data-envelope-field="attachments"></textarea>
+              </label>
+            </div>
+          </fieldset>
+          <p id="cl-envelope-hint" class="cl-envelope-hint muted"
+             data-local-en="Body and letter details save together. Editing does not mark the application ready or submit it."
+             data-local-de="Text und Anschreibendetails werden gemeinsam gespeichert. Bearbeiten markiert die Bewerbung nicht als bereit und sendet sie nicht ab.">
+            Body and letter details save together. Editing does not mark the application ready or submit it.
+          </p>
+        </details>
+        <iframe id="cl-preview" class="cl-preview" title="Cover letter preview" data-i18n-attr="title:cl.preview_title" hidden></iframe>
       </section>
     </main>
   </div>

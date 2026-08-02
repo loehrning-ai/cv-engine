@@ -94,9 +94,16 @@ jobs:
             echo "Production Compose config retained a build fallback" >&2
             exit 1
           fi
+          # Derived, not a literal: every prod service must pin pull_policy so
+          # a release can never reach for a mutable tag. Hardcoding the count
+          # meant adding the pdf-cleanup-worker silently broke this step, and
+          # `test` fails with no output so the log showed only "exit code 1".
+          release_service_count="$(
+            docker compose --profile prod config --services | wc -l | tr -d '[:space:]'
+          )"
           test "$(
             grep -c 'pull_policy: never' <<<"$release_config"
-          )" = "3"
+          )" = "$release_service_count"
           test "$(
             sed -n 's/^[[:space:]]*image: //p' <<<"$release_config" \
               | sort -u

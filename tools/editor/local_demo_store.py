@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import datetime as _dt
 import itertools
+import threading
 import uuid
+from contextlib import contextmanager
 from typing import Any
 
 from flask import g, has_app_context
@@ -26,6 +28,7 @@ from flask import g, has_app_context
 import auth as auth_mod
 
 _ts_counter = itertools.count(1)
+_STORE_LOCK = threading.RLock()
 
 
 def _next_ts() -> str:
@@ -51,6 +54,7 @@ class _Query:
         self._is_null: list[str] = []
         self._order: list[tuple[str, bool]] = []
         self._limit: int | None = None
+        self._range: tuple[int, int] | None = None
 
     def select(self, columns: str = "*", **_k) -> "_Query":
         self._select = columns
@@ -78,6 +82,10 @@ class _Query:
         self._limit = count
         return self
 
+    def range(self, start: int, end: int, **_k) -> "_Query":
+        self._range = (int(start), int(end))
+        return self
+
     def _matches(self, row: dict) -> bool:
         if not all(row.get(k) == v for k, v in self._eq.items()):
             return False
@@ -86,43 +94,47 @@ class _Query:
         return all(row.get(c) is None for c in self._is_null)
 
     def execute(self) -> _Resp:
-        if self._op == "select":
-            rows = [dict(r) for r in self._t.rows if self._matches(r)]
-            for column, desc in reversed(self._order):
-                rows.sort(key=lambda r: (r.get(column) is None, r.get(column) or ""), reverse=desc)
-            if self._limit is not None:
-                rows = rows[: self._limit]
-            return _Resp(rows)
-        if self._op == "insert":
-            payloads = self._payload if isinstance(self._payload, list) else [self._payload]
-            inserted = []
-            for item in payloads:
-                row = dict(item)
-                row.setdefault("id", str(uuid.uuid4()))
-                row.setdefault("owner_id", self._t.store.owner_id)
-                row.setdefault("created_at", _next_ts())
-                row.setdefault("updated_at", row["created_at"])
-                self._t.rows.append(row)
-                inserted.append(dict(row))
-            return _Resp(inserted)
-        if self._op == "update":
-            updated = []
-            for row in self._t.rows:
-                if self._matches(row):
-                    row.update(self._payload)
-                    # Honour an explicit updated_at (server.py stamps one so the
-                    # response matches the stored row — the CV save revision
-                    # check depends on it); otherwise bump like the DB would.
-                    row["updated_at"] = self._payload.get("updated_at") or _next_ts()
-                    updated.append(dict(row))
-            return _Resp(updated)
-        if self._op == "delete":
-            kept, removed = [], []
-            for row in self._t.rows:
-                (removed if self._matches(row) else kept).append(row)
-            self._t.rows[:] = kept
-            return _Resp(removed)
-        raise RuntimeError(f"local demo store: unsupported op {self._op}")
+        with _STORE_LOCK:
+            if self._op == "select":
+                rows = [dict(r) for r in self._t.rows if self._matches(r)]
+                for column, desc in reversed(self._order):
+                    rows.sort(key=lambda r: (r.get(column) is None, r.get(column) or ""), reverse=desc)
+                if self._range is not None:
+                    start, end = self._range
+                    rows = rows[start : end + 1]
+                if self._limit is not None:
+                    rows = rows[: self._limit]
+                return _Resp(rows)
+            if self._op == "insert":
+                payloads = self._payload if isinstance(self._payload, list) else [self._payload]
+                inserted = []
+                for item in payloads:
+                    row = dict(item)
+                    row.setdefault("id", str(uuid.uuid4()))
+                    row.setdefault("owner_id", self._t.store.owner_id)
+                    row.setdefault("created_at", _next_ts())
+                    row.setdefault("updated_at", row["created_at"])
+                    self._t.rows.append(row)
+                    inserted.append(dict(row))
+                return _Resp(inserted)
+            if self._op == "update":
+                updated = []
+                for row in self._t.rows:
+                    if self._matches(row):
+                        row.update(self._payload)
+                        # Honour an explicit updated_at (server.py stamps one so the
+                        # response matches the stored row — the CV save revision
+                        # check depends on it); otherwise bump like the DB would.
+                        row["updated_at"] = self._payload.get("updated_at") or _next_ts()
+                        updated.append(dict(row))
+                return _Resp(updated)
+            if self._op == "delete":
+                kept, removed = [], []
+                for row in self._t.rows:
+                    (removed if self._matches(row) else kept).append(row)
+                self._t.rows[:] = kept
+                return _Resp(removed)
+            raise RuntimeError(f"local demo store: unsupported op {self._op}")
 
 
 class _Table:
@@ -175,17 +187,26 @@ def active() -> bool:
     return getattr(g, "owner_id", None) == auth_mod.LOCAL_DEMO_OWNER_ID
 
 
+@contextmanager
+def locked():
+    """Serialize compound operations against the process-local demo store."""
+    with _STORE_LOCK:
+        yield
+
+
 def db() -> LocalDemoDb:
     global _DB
-    if _DB is None:
-        _DB = LocalDemoDb(auth_mod.LOCAL_DEMO_OWNER_ID)
-    return _DB
+    with _STORE_LOCK:
+        if _DB is None:
+            _DB = LocalDemoDb(auth_mod.LOCAL_DEMO_OWNER_ID)
+        return _DB
 
 
 def reset() -> None:
     """Drop all stored rows (test isolation helper)."""
     global _DB
-    _DB = None
+    with _STORE_LOCK:
+        _DB = None
 
 
 # The seeded primary demo CV is materialized into this store's ``documents``

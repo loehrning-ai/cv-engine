@@ -225,11 +225,14 @@ def main():
         page.wait_for_load_state("networkidle")
         page.locator("#preview-stage").wait_for(state="attached")
         page.wait_for_timeout(2500)
+        active_cv_id = page.evaluate("localStorage.getItem('cv.editor.activeId') || ''")
+        active_cv_path = f"/api/cv?id={active_cv_id}" if active_cv_id else "/api/cv"
 
         # ───────────────────────────────────────────────────────
         # 1.  Bootstrap & DOM presence
         # ───────────────────────────────────────────────────────
         print("\n--- 1. Bootstrap ---")
+        check("active CV id resolved", bool(re.fullmatch(r"[0-9a-fA-F-]{36}", active_cv_id)), active_cv_id)
         check("page title identifies editor", "editor" in page.title().lower() or "cv" in page.title().lower())
         check("form mounted", page.evaluate("document.querySelector('#form-host > *') !== null"))
         check("preview-stage exists", page.evaluate("document.querySelector('#preview-stage') !== null"))
@@ -279,7 +282,7 @@ def main():
         page.wait_for_timeout(500)
         page.keyboard.press("Meta+s")
         page.wait_for_timeout(2200)
-        density_resp = fetch_text(page, "/api/cv")
+        density_resp = fetch_text(page, active_cv_path)
         density_now = yaml_field(density_resp.get("text") or "", "density", r"(\w+)")
         if density_now == "tight" or strict_writes:
             check("changing density persists to YAML", density_now == "tight", f"yaml density = {density_now}")
@@ -289,7 +292,7 @@ def main():
         page.wait_for_timeout(500)
         page.keyboard.press("Meta+s")
         page.wait_for_timeout(2200)
-        font_resp = fetch_text(page, "/api/cv")
+        font_resp = fetch_text(page, active_cv_path)
         font_now = yaml_field(font_resp.get("text") or "", "font", r"(\w+)")
         if font_now == "mono" or strict_writes:
             check("changing font persists to YAML", font_now == "mono", f"yaml font = {font_now}")
@@ -511,7 +514,7 @@ def main():
         check("theme picker has >=3 themes", theme_rows >= 3, f"got {theme_rows}")
         # Apply the LAST theme (deterministic — different from likely current)
         if theme_rows >= 2:
-            accent_resp_before = fetch_text(page, "/api/cv")
+            accent_resp_before = fetch_text(page, active_cv_path)
             accent_before = yaml_field(
                 accent_resp_before.get("text") or "",
                 "accent",
@@ -530,7 +533,7 @@ def main():
             page.wait_for_timeout(500)
             page.keyboard.press("Meta+s")
             page.wait_for_timeout(2200)
-            accent_resp_after = fetch_text(page, "/api/cv")
+            accent_resp_after = fetch_text(page, active_cv_path)
             accent_after = yaml_field(
                 accent_resp_after.get("text") or "",
                 "accent",
@@ -549,7 +552,7 @@ def main():
             warn("theme apply skipped", "fewer than 2 themes available")
 
         page.keyboard.press("Escape")
-        current_template_resp = fetch_text(page, "/api/cv")
+        current_template_resp = fetch_text(page, active_cv_path)
         current_template = yaml_field(current_template_resp.get("text") or "", "template", r"([\\w-]+)")
         target_template = "modern" if current_template == "sidebar" else "sidebar"
         page.click("#template-btn", force=True)
@@ -563,7 +566,7 @@ def main():
         page.wait_for_timeout(800)
         page.keyboard.press("Meta+s")
         page.wait_for_timeout(2200)
-        appearance_resp = fetch_text(page, "/api/cv")
+        appearance_resp = fetch_text(page, active_cv_path)
         template_now = yaml_field(appearance_resp.get("text") or "", "template", r"([\\w-]+)")
         paper_now = yaml_field(appearance_resp.get("text") or "", "paper", r"([\\w-]+)")
         if template_now == target_template or strict_writes:
@@ -608,7 +611,7 @@ def main():
         # 13.  API endpoints
         # ───────────────────────────────────────────────────────
         print("\n--- 13. API endpoints ---")
-        api_cv = fetch_text(page, "/api/cv")
+        api_cv = fetch_text(page, active_cv_path)
         check("/api/cv 200", api_cv.get("ok"), str(api_cv))
         api_schema = fetch_json(page, "/api/schema")
         schema_data = api_schema.get("data") or {}
@@ -616,24 +619,37 @@ def main():
         api_themes = fetch_json(page, "/api/themes")
         themes_data = api_themes.get("data") or {}
         check("/api/themes returns themes", api_themes.get("ok") and len(themes_data.get("themes") or []) >= 3, str(api_themes))
-        api_outline = fetch_json(page, "/api/outline")
+        api_outline = fetch_json(page, f"/api/outline?id={active_cv_id}")
         outline_data = api_outline.get("data") or {}
         check("/api/outline returns items", api_outline.get("ok") and len(outline_data.get("items") or []) >= 5, str(api_outline))
-        api_preview = page.evaluate("(async () => { const r = await fetch('/api/preview?theme=light&mode=continuous&density=normal'); return { ok: r.ok, status: r.status }; })()")
+        api_preview = page.evaluate(
+            """async (cvId) => {
+                const params = new URLSearchParams({
+                    theme: "light", mode: "continuous", density: "normal", id: cvId,
+                });
+                const r = await fetch("/api/preview?" + params.toString());
+                return { ok: r.ok, status: r.status };
+            }""",
+            active_cv_id,
+        )
         check("/api/preview 200", api_preview.get("ok"), str(api_preview))
 
         # ───────────────────────────────────────────────────────
         # 14.  Build endpoint — returns binary PDF on success
         # ───────────────────────────────────────────────────────
         print("\n--- 14. Build endpoint ---")
-        build_resp = page.evaluate("""(async () => {
+        build_resp = page.evaluate("""async (cvId) => {
             try {
-                const r = await fetch('/api/build', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}' });
+                const r = await fetch('/api/build', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ id: cvId }),
+                });
                 const ct = r.headers.get('content-type') || '';
                 const ab = await r.arrayBuffer();
                 return { ok: r.ok, status: r.status, contentType: ct, bytes: ab.byteLength };
             } catch (e) { return { ok: false, error: String(e) }; }
-        })()""")
+        }""", active_cv_id)
         if build_resp.get("ok") or strict_writes:
             check("/api/build POST succeeds", build_resp.get("ok"), str(build_resp))
         else:
@@ -657,7 +673,7 @@ def main():
         page.keyboard.press("Meta+s")
         page.wait_for_timeout(2200)
         # Verify the YAML document returned by the API now contains the new name
-        name_resp = fetch_text(page, "/api/cv")
+        name_resp = fetch_text(page, active_cv_path)
         yaml_name = yaml_field(name_resp.get("text") or "", "name")
         if yaml_name == "Alex Hartman QA" or strict_writes:
             check("Cmd+S persists name change to YAML", yaml_name == "Alex Hartman QA", f"yaml = {yaml_name}")

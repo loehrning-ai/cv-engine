@@ -40,7 +40,10 @@ import re
 import threading
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
+
+import yaml
 
 import auth as auth_mod
 from r2_security import validate_r2_account_id
@@ -48,8 +51,10 @@ from r2_security import validate_r2_account_id
 # engine/ is on sys.path in every entrypoint (server boot, tests).
 try:
     from render.pdf_service import RenderedPdf, render_cv_pdf
+    from render import css_base, template_registry
 except ImportError:  # pragma: no cover - unusual import roots
     from engine.render.pdf_service import RenderedPdf, render_cv_pdf
+    from engine.render import css_base, template_registry
 
 
 # ---------------------------------------------------------------------------
@@ -63,6 +68,30 @@ except ImportError:  # pragma: no cover - unusual import roots
 _MAX_CONCURRENT_RENDERS = 2
 RENDER_SEMAPHORE = threading.Semaphore(_MAX_CONCURRENT_RENDERS)
 RENDER_CACHE_VERSION = "cv-render-2026-07-24-resource-policy-v3"
+
+
+def _revision_evidence_matches(actual: object, expected: object) -> bool:
+    """Compare timestamptz evidence by instant, not PostgREST string spelling."""
+    if actual == expected:
+        return True
+    if not isinstance(actual, str) or not isinstance(expected, str):
+        return False
+
+    def _parse(value: str) -> datetime | None:
+        normalized = value.strip()
+        if normalized.endswith("Z"):
+            normalized = normalized[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(normalized)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    actual_instant = _parse(actual)
+    expected_instant = _parse(expected)
+    return actual_instant is not None and actual_instant == expected_instant
 
 
 def _render_owner_id(explicit_owner_id: str | None = None) -> str | None:
@@ -129,6 +158,14 @@ def render_cover_letter(doc: dict[str, Any], *, base_url: str = "") -> bytes:
 # ---------------------------------------------------------------------------
 class StorageError(RuntimeError):
     """Raised when an R2 or artifact-metadata operation fails."""
+
+
+class ArtifactRevisionConflict(StorageError):
+    """Raised when a document changes while its PDF is rendering."""
+
+
+class ArtifactAccountUnavailable(StorageError):
+    """Raised when the owner becomes unavailable during an artifact operation."""
 
 
 def _r2_config() -> dict[str, str]:
@@ -260,20 +297,39 @@ def presigned_get(key: str, ttl: int = 3600, filename: str = "document.pdf") -> 
         raise StorageError(f"R2 presign failed: {type(exc).__name__}") from exc
 
 
-def r2_object_exists(key: str) -> bool:
-    """True only when the configured R2 bucket contains ``key``.
+def _r2_not_found(exc: Exception) -> bool:
+    """Recognize an authoritative S3/R2 missing-object response."""
+    response = getattr(exc, "response", None)
+    if isinstance(response, dict):
+        error = response.get("Error")
+        code = str(error.get("Code") if isinstance(error, dict) else "")
+        metadata = response.get("ResponseMetadata")
+        status = metadata.get("HTTPStatusCode") if isinstance(metadata, dict) else None
+        if code in {"404", "NoSuchKey", "NotFound"} or status == 404:
+            return True
+    return getattr(exc, "status_code", None) == 404
 
-    External-apply readiness is intentionally stricter than the normal build
-    cache path: a database row alone is not proof that an application packet has
-    a persisted PDF. Any missing config, missing key, or storage error fails
-    closed.
-    """
+
+def _r2_object_exists_strict(key: str) -> bool:
+    """Return False only for an authoritative 404; raise on indeterminate HEAD."""
     if not key:
-        return False
+        raise StorageError("R2 HEAD refused an empty object key")
     try:
         cfg = _r2_config()
         _client().head_object(Bucket=cfg["bucket"], Key=key)
         return True
+    except StorageError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - normalize provider failures
+        if _r2_not_found(exc):
+            return False
+        raise StorageError(f"R2 HEAD failed: {type(exc).__name__}") from exc
+
+
+def r2_object_exists(key: str) -> bool:
+    """Fail-closed object evidence for readiness and other boolean callers."""
+    try:
+        return _r2_object_exists_strict(key)
     except Exception:  # noqa: BLE001 - readiness must fail closed
         return False
 
@@ -320,9 +376,76 @@ def content_hash(
     return hashlib.sha256("\x00".join(parts).encode("utf-8")).hexdigest()
 
 
+def persisted_cv_content_hash(
+    yaml_blob: str,
+    accent: str = "",
+    font: str = "",
+) -> str:
+    """Return the canonical cache hash for a persisted CV document.
+
+    ``/api/build`` permits explicit density/template/paper overrides for one
+    render. External-apply readiness must not accept an artifact produced from
+    such an ephemeral override as proof of the current document. Its canonical
+    identity therefore uses the persisted YAML appearance with the same
+    normalization/defaults as the build route, plus the mirrored accent/font
+    document columns that are part of the existing cache contract.
+    """
+    if not isinstance(yaml_blob, str):
+        raise StorageError("invalid persisted CV content")
+    if not isinstance(accent, str) or not isinstance(font, str):
+        raise StorageError("invalid persisted CV appearance")
+    try:
+        parsed = yaml.safe_load(yaml_blob)
+    except Exception as exc:  # noqa: BLE001 - normalize parser failures
+        raise StorageError("invalid persisted CV content") from exc
+    if not isinstance(parsed, dict):
+        raise StorageError("invalid persisted CV content")
+
+    density_value = parsed.get("density")
+    density = (
+        (density_value or "normal").strip().lower()
+        if isinstance(density_value, str)
+        else "normal"
+    )
+    if density not in {"tight", "normal", "airy"}:
+        density = "normal"
+
+    template_value = parsed.get("template")
+    template = template_registry.normalize_template(
+        (template_value or "classic").strip().lower()
+        if isinstance(template_value, str)
+        else "classic"
+    )
+
+    paper_value = parsed.get("paper")
+    paper = (
+        (paper_value or "white").strip().lower()
+        if isinstance(paper_value, str)
+        else "white"
+    )
+    try:
+        paper = css_base.normalize_paper(paper)
+    except ValueError:
+        paper = "white"
+
+    return content_hash(yaml_blob, accent, font, density, template, paper)
+
+
+def cover_letter_content_hash(cache_key_text: str) -> str:
+    """Return the canonical cache hash for cover-letter renderer inputs."""
+    if not isinstance(cache_key_text, str):
+        raise StorageError("invalid cover-letter cache content")
+    return content_hash(cache_key_text, "", "", "letter")
+
+
 def _artifact_table():
     """The RLS-scoped ``pdf_artifacts`` table handle for the current user."""
     return auth_mod.user_supabase().table("pdf_artifacts")
+
+
+def _server_sb():
+    """Service-role client for server-authored artifact mutations."""
+    return auth_mod.server_supabase()
 
 
 def _canonical_uuid(value: object, *, field: str) -> str:
@@ -352,12 +475,29 @@ def _verified_owner_id() -> str:
     return _canonical_uuid(owner_id, field="owner id")
 
 
-def _r2_key(owner_id: str, document_id: str, chash: str) -> str:
-    """Canonical content-addressed key: ``{owner}/{document}/{hash}.pdf``."""
+def _r2_key(
+    owner_id: str,
+    document_id: str,
+    chash: str,
+    generation_id: object | None = None,
+) -> str:
+    """Return a canonical legacy or unique-generation object key."""
     owner = _canonical_uuid(owner_id, field="owner id")
     document = _canonical_uuid(document_id, field="document id")
     digest = _canonical_hash(chash)
-    return f"{owner}/{document}/{digest}.pdf"
+    if generation_id is None:
+        return f"{owner}/{document}/{digest}.pdf"
+    generation = _canonical_uuid(generation_id, field="generation id")
+    return f"{owner}/{document}/{digest}/{generation}.pdf"
+
+
+def verified_artifact_key(
+    document_id: str,
+    chash: str,
+    generation_id: object | None = None,
+) -> str:
+    """Canonical object key bound to the current verified request owner."""
+    return _r2_key(_verified_owner_id(), document_id, chash, generation_id)
 
 
 def _validated_row_key(row: dict, verified_owner_id: str) -> str:
@@ -366,50 +506,155 @@ def _validated_row_key(row: dict, verified_owner_id: str) -> str:
         verified_owner_id,
         row.get("document_id"),
         row.get("content_hash"),
+        row.get("generation_id"),
     )
     if row.get("r2_key") != expected:
         raise StorageError("PDF artifact key is not canonical for the verified owner")
     return expected
 
 
-def _find_fresh_artifact(
+def _resolve_current_artifact(
+    *,
     document_id: str,
+    document_revision: object,
     chash: str,
     owner_id: str,
+    dependency_document_id: str | None = None,
+    dependency_revision: object | None = None,
 ) -> dict | None:
-    """A non-stale artifact for ``document_id`` whose hash matches, or None.
-
-    RLS scopes the SELECT to ``owner_id = auth.uid()`` so only the caller's
-    artifacts are visible. The query also requires the exact key derived from
-    the verified owner, document, and content hash; a writable metadata row can
-    never redirect a presign operation to another tenant's object.
-    """
+    """Resolve a revision-bound cache hit through the service-role RPC."""
     verified_owner = _verified_owner_id()
     if _canonical_uuid(owner_id, field="owner id") != verified_owner:
         raise StorageError("artifact owner does not match the verified request")
-    expected_key = _r2_key(verified_owner, document_id, chash)
-    resp = (
-        _artifact_table()
-        .select("id, r2_key, document_id, content_hash, page_count, stale")
-        .eq("document_id", document_id)
-        .eq("content_hash", chash)
-        .eq("r2_key", expected_key)
-        .eq("stale", False)
-        .limit(1)
-        .execute()
+    dependency = (
+        _canonical_uuid(dependency_document_id, field="dependency document id")
+        if dependency_document_id is not None
+        else None
     )
-    rows = resp.data or []
-    if not rows:
+    try:
+        response = _server_sb().rpc(
+            "resolve_pdf_artifact",
+            {
+                "p_owner_id": verified_owner,
+                "p_document_id": document_id,
+                "p_document_revision": document_revision,
+                "p_content_hash": chash,
+                "p_dependency_document_id": dependency,
+                "p_dependency_revision": dependency_revision,
+            },
+        ).execute().data
+    except Exception as exc:  # noqa: BLE001 - normalize database transport errors
+        raise StorageError(
+            f"PDF artifact resolution failed: {type(exc).__name__}"
+        ) from exc
+    result = response[0] if isinstance(response, list) and response else response
+    if not isinstance(result, dict):
+        raise StorageError("PDF artifact resolution returned invalid evidence")
+    status = result.get("status")
+    if status == "revision_conflict":
+        raise ArtifactRevisionConflict("document changed during PDF cache lookup")
+    if status == "miss":
         return None
-    _validated_row_key(rows[0], verified_owner)
-    return rows[0]
+    if status != "hit":
+        if result.get("code") == "account_unavailable":
+            raise ArtifactAccountUnavailable("account is unavailable")
+        raise StorageError(str(result.get("code") or "PDF artifact resolution blocked"))
+    if (
+        result.get("document_id") != document_id
+        or result.get("content_hash") != chash
+    ):
+        raise StorageError("PDF artifact resolution evidence mismatch")
+    _validated_row_key(result, verified_owner)
+    return result
+
+
+def authorize_document_export(
+    *,
+    document_id: str,
+    document_revision: object,
+) -> None:
+    """Authorize a direct stream at an active account/document revision."""
+    owner = _verified_owner_id()
+    document = _canonical_uuid(document_id, field="document id")
+    try:
+        response = _server_sb().rpc(
+            "authorize_document_export",
+            {
+                "p_owner_id": owner,
+                "p_document_id": document,
+                "p_document_revision": document_revision,
+            },
+        ).execute().data
+    except Exception as exc:  # noqa: BLE001 - normalize database transport errors
+        raise StorageError(
+            f"document export authorization failed: {type(exc).__name__}"
+        ) from exc
+    result = response[0] if isinstance(response, list) and response else response
+    if not isinstance(result, dict):
+        raise StorageError("document export authorization returned invalid evidence")
+    if result.get("status") == "revision_conflict":
+        raise ArtifactRevisionConflict("document changed before export")
+    if result.get("status") != "authorized":
+        if result.get("code") == "account_unavailable":
+            raise ArtifactAccountUnavailable("account is unavailable")
+        raise StorageError(str(result.get("code") or "document export blocked"))
+    if (
+        result.get("document_id") != document
+        or not _revision_evidence_matches(
+            result.get("document_revision"), document_revision
+        )
+    ):
+        raise StorageError("document export authorization evidence mismatch")
+
+
+def _evict_broken_artifact(
+    *,
+    document_id: str,
+    document_revision: object,
+    artifact: dict,
+) -> str:
+    """CAS-evict exactly one metadata row after its object failed HEAD."""
+    owner = _verified_owner_id()
+    artifact_id = _canonical_uuid(artifact.get("artifact_id"), field="artifact id")
+    _validated_row_key(artifact, owner)
+    try:
+        response = _server_sb().rpc(
+            "evict_broken_pdf_artifact",
+            {
+                "p_owner_id": owner,
+                "p_document_id": document_id,
+                "p_document_revision": document_revision,
+                "p_artifact_id": artifact_id,
+            },
+        ).execute().data
+    except Exception as exc:  # noqa: BLE001 - normalize database transport errors
+        raise StorageError(
+            f"broken PDF artifact eviction failed: {type(exc).__name__}"
+        ) from exc
+    result = response[0] if isinstance(response, list) and response else response
+    if not isinstance(result, dict):
+        raise StorageError("broken PDF artifact eviction returned invalid evidence")
+    status = result.get("status")
+    if status == "revision_conflict":
+        raise ArtifactRevisionConflict("document changed during PDF cache repair")
+    if status == "already_replaced":
+        return status
+    if status != "evicted":
+        if result.get("code") == "account_unavailable":
+            raise ArtifactAccountUnavailable("account is unavailable")
+        raise StorageError(str(result.get("code") or "broken PDF eviction blocked"))
+    cleanup = result.get("artifact")
+    if not isinstance(cleanup, dict):
+        raise StorageError("broken PDF eviction returned invalid cleanup evidence")
+    delete_detached_artifacts([cleanup], strict=False)
+    return status
 
 
 def _artifact_rows(document_id: str | None = None) -> list[dict]:
     """Return RLS-scoped artifact identities for one document or the owner."""
     try:
         query = _artifact_table().select(
-            "id, r2_key, document_id, content_hash"
+            "id, r2_key, document_id, content_hash, generation_id"
         )
         if document_id is not None:
             query = query.eq("document_id", document_id)
@@ -422,76 +667,524 @@ def _artifact_rows(document_id: str | None = None) -> list[dict]:
         ) from exc
 
 
-def _delete_artifact_rows(rows: list[dict], verified_owner_id: str) -> int:
-    """Delete each remote object before its corresponding metadata row.
+def delete_document_artifacts(document_id: str, *, force: bool = False) -> int:
+    """Atomically detach then delete every cached PDF for one owned document."""
+    verified_owner = _verified_owner_id()
+    document = _canonical_uuid(document_id, field="document id")
+    try:
+        response = _server_sb().rpc(
+            "detach_pdf_artifacts",
+            {"p_owner_id": verified_owner, "p_document_id": document},
+        ).execute().data
+    except Exception as exc:  # noqa: BLE001 - normalize database transport errors
+        raise StorageError(
+            f"PDF artifact detach failed: {type(exc).__name__}"
+        ) from exc
+    result = response[0] if isinstance(response, list) and response else response
+    if not isinstance(result, dict):
+        raise StorageError("PDF artifact detach returned invalid evidence")
+    status = result.get("status")
+    if status == "not_found":
+        return 0
+    if status != "detached":
+        raise StorageError(str(result.get("code") or "PDF artifact detach blocked"))
+    rows = result.get("artifacts") or []
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise StorageError("PDF artifact detach returned invalid rows")
+    return delete_detached_artifacts(rows, force=force)
 
-    A failure stops immediately. Rows already completed remain safely removed;
-    the owning document is untouched and a retry is idempotent. If object
-    deletion commits but the row deletion response is lost, the retained row
-    is retried against S3's idempotent DeleteObject operation.
+
+def delete_owner_cv_artifacts(*, force: bool = True) -> int:
+    """Atomically detach every current CV artifact for the verified owner."""
+    owner = _verified_owner_id()
+    try:
+        response = _server_sb().rpc(
+            "detach_owner_cv_pdf_artifacts",
+            {"p_owner_id": owner},
+        ).execute().data
+    except Exception as exc:  # noqa: BLE001 - normalize database transport errors
+        raise StorageError(
+            f"owner CV artifact detach failed: {type(exc).__name__}"
+        ) from exc
+    result = response[0] if isinstance(response, list) and response else response
+    if not isinstance(result, dict):
+        raise StorageError("owner CV artifact detach returned invalid evidence")
+    if result.get("status") != "detached":
+        if result.get("code") == "account_unavailable":
+            raise ArtifactAccountUnavailable("account is unavailable")
+        raise StorageError(str(result.get("code") or "owner CV artifact detach blocked"))
+    rows = result.get("artifacts") or []
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise StorageError("owner CV artifact detach returned invalid rows")
+    return delete_detached_artifacts(rows, force=force)
+
+
+def update_document_with_artifact_detach(
+    *,
+    document_id: str,
+    document_type: str,
+    expected_revision: object,
+    yaml_blob: str,
+    updated_at: object,
+    accent: str | None = None,
+    font: str | None = None,
+    density: str | None = None,
+    summary_company: str | None = None,
+    summary_role: str | None = None,
+) -> dict:
+    """CAS-save render inputs and detach old PDF metadata in one transaction."""
+    owner = _verified_owner_id()
+    document = _canonical_uuid(document_id, field="document id")
+    if document_type not in {"cv", "cover_letter"}:
+        raise StorageError("unsupported document type")
+    if expected_revision is None or updated_at is None or not isinstance(yaml_blob, str):
+        raise StorageError("document save revision and content are required")
+    try:
+        response = _server_sb().rpc(
+            "update_document_with_artifact_detach",
+            {
+                "p_owner_id": owner,
+                "p_document_id": document,
+                "p_document_type": document_type,
+                "p_expected_revision": expected_revision,
+                "p_yaml_blob": yaml_blob,
+                "p_updated_at": updated_at,
+                "p_accent": accent,
+                "p_font": font,
+                "p_density": density,
+                "p_summary_company": summary_company,
+                "p_summary_role": summary_role,
+            },
+        ).execute().data
+    except Exception as exc:  # noqa: BLE001 - normalize database transport errors
+        raise StorageError(f"document save failed: {type(exc).__name__}") from exc
+    result = response[0] if isinstance(response, list) and response else response
+    if not isinstance(result, dict):
+        raise StorageError("document save returned invalid evidence")
+    status = result.get("status")
+    if status in {"revision_conflict", "not_found"}:
+        return result
+    if status != "saved":
+        if result.get("code") == "account_unavailable":
+            raise ArtifactAccountUnavailable("account is unavailable")
+        raise StorageError(str(result.get("code") or "document save blocked"))
+    if (
+        result.get("document_id") != document
+        or not _revision_evidence_matches(
+            result.get("document_revision"), updated_at
+        )
+        or not isinstance(result.get("render_changed"), bool)
+    ):
+        raise StorageError("document save evidence mismatch")
+    artifacts = result.get("artifacts") or []
+    if not isinstance(artifacts, list) or any(not isinstance(row, dict) for row in artifacts):
+        raise StorageError("document save cleanup evidence is invalid")
+    return result
+
+
+def _claim_cleanup_row(
+    row: dict,
+    *,
+    verified_owner: str,
+    force: bool,
+) -> tuple[str, str] | None:
+    """Claim one queue identity; return ``(claim_token, key)`` when deletable."""
+    cleanup_id = _canonical_uuid(row.get("cleanup_id"), field="cleanup id")
+    expected_key = _validated_row_key(row, verified_owner)
+    claim_token = str(uuid.uuid4())
+    try:
+        response = _server_sb().rpc(
+            "claim_pdf_artifact_cleanup",
+            {
+                "p_owner_id": verified_owner,
+                "p_cleanup_id": cleanup_id,
+                "p_claim_token": claim_token,
+                "p_force": bool(force),
+            },
+        ).execute().data
+    except Exception as exc:  # noqa: BLE001 - normalize database transport errors
+        raise StorageError(
+            f"PDF artifact cleanup claim failed: {type(exc).__name__}"
+        ) from exc
+    result = response[0] if isinstance(response, list) and response else response
+    if not isinstance(result, dict):
+        raise StorageError("PDF artifact cleanup claim returned invalid evidence")
+    status = result.get("status")
+    if status in {"active", "busy", "missing", "pending"}:
+        return None
+    if status != "claimed":
+        raise StorageError(str(result.get("code") or "PDF artifact cleanup blocked"))
+    if (
+        result.get("cleanup_id") != cleanup_id
+        or result.get("owner_id") != verified_owner
+        or result.get("claim_token") != claim_token
+        or result.get("document_id") != row.get("document_id")
+        or result.get("content_hash") != row.get("content_hash")
+        or result.get("generation_id") != row.get("generation_id")
+        or result.get("r2_key") != expected_key
+    ):
+        raise StorageError("PDF artifact cleanup claim evidence mismatch")
+    _validated_row_key(result, verified_owner)
+    return claim_token, expected_key
+
+
+def delete_detached_artifacts(
+    rows: list[dict],
+    *,
+    strict: bool = True,
+    force: bool = False,
+) -> int:
+    """Delete R2 objects captured by an atomic document-delete RPC.
+
+    The database rows have already cascaded with the document. Validate every
+    returned content-addressed identity against the authenticated owner before
+    issuing any object deletion, then delete only those canonical keys.
     """
-    deleted = 0
+    if not rows:
+        return 0
+    verified_owner = _verified_owner_id()
+    validated: list[tuple[str, dict]] = []
     for row in rows:
-        artifact_id = row.get("id")
-        if not artifact_id:
-            raise StorageError("PDF artifact metadata is incomplete")
-        r2_key = _validated_row_key(row, verified_owner_id)
-        delete_pdf(r2_key)
+        cleanup_id = _canonical_uuid(row.get("cleanup_id"), field="cleanup id")
+        _validated_row_key(row, verified_owner)
+        validated.append((cleanup_id, row))
+    deleted = 0
+    failures = 0
+    for cleanup_id, row in validated:
         try:
-            _artifact_table().delete().eq("id", artifact_id).execute()
-        except Exception as exc:  # noqa: BLE001 — normalize database transport errors
-            raise StorageError(
-                f"PDF artifact row deletion failed: {type(exc).__name__}"
-            ) from exc
+            claim = _claim_cleanup_row(
+                row,
+                verified_owner=verified_owner,
+                force=force,
+            )
+        except Exception:
+            failures += 1
+            continue
+        if claim is None:
+            continue
+        claim_token, key = claim
+        try:
+            delete_pdf(key)
+        except Exception:
+            try:
+                _server_sb().rpc(
+                    "record_pdf_artifact_cleanup_failure",
+                    {
+                        "p_owner_id": verified_owner,
+                        "p_cleanup_id": cleanup_id,
+                        "p_claim_token": claim_token,
+                    },
+                ).execute()
+            except Exception:
+                pass
+            failures += 1
+            continue
+        try:
+            # False is an idempotent success: another worker may have deleted
+            # the same object and acknowledged the same queue row concurrently.
+            _server_sb().rpc(
+                "complete_pdf_artifact_cleanup",
+                {
+                    "p_owner_id": verified_owner,
+                    "p_cleanup_id": cleanup_id,
+                    "p_claim_token": claim_token,
+                },
+            ).execute()
+        except Exception:
+            failures += 1
+            continue
         deleted += 1
+    if failures and strict:
+        raise StorageError(f"PDF artifact cleanup incomplete ({failures} failed)")
     return deleted
 
 
-def delete_document_artifacts(document_id: str) -> int:
-    """Delete every cached PDF for one owned document, object first.
-
-    An unowned or already-clean document yields zero rows. When no rows exist,
-    R2 need not be configured and this is an idempotent no-op.
-    """
-    verified_owner = _verified_owner_id()
-    document = _canonical_uuid(document_id, field="document id")
-    return _delete_artifact_rows(
-        _artifact_rows(document),
-        verified_owner,
+def retry_pending_artifact_cleanup(
+    *,
+    limit: int = 20,
+    force: bool = False,
+) -> int:
+    """Consume a bounded batch of the authenticated owner's durable outbox."""
+    bounded = max(1, min(int(limit), 100))
+    query = (
+        _server_sb()
+        .table("pdf_artifact_cleanup_queue")
+        .select(
+            "id, document_id, r2_key, content_hash, generation_id, not_before"
+        )
+        .eq("owner_id", _verified_owner_id())
     )
+    if not force:
+        query = query.lte("not_before", datetime.now(timezone.utc).isoformat())
+    rows = (
+        query.order("attempt_count")
+        .order("created_at")
+        .limit(bounded)
+        .execute()
+        .data
+        or []
+    )
+    normalized = [
+        {
+            "cleanup_id": row.get("id"),
+            "document_id": row.get("document_id"),
+            "r2_key": row.get("r2_key"),
+            "content_hash": row.get("content_hash"),
+            "generation_id": row.get("generation_id"),
+            "not_before": row.get("not_before"),
+        }
+        for row in rows
+    ]
+    return delete_detached_artifacts(normalized, strict=False, force=force)
 
 
-def delete_owner_artifacts() -> int:
-    """Delete every cached PDF visible to the authenticated owner."""
-    verified_owner = _verified_owner_id()
-    return _delete_artifact_rows(_artifact_rows(), verified_owner)
+def pending_artifact_cleanup_count() -> int:
+    """Return zero when the current owner has no durable cleanup work."""
+    rows = (
+        _server_sb()
+        .table("pdf_artifact_cleanup_queue")
+        .select("id")
+        .eq("owner_id", _verified_owner_id())
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    return 1 if rows else 0
 
 
-def mark_document_stale(document_id: str) -> int:
-    """Compatibility alias for strict object-and-row invalidation."""
-    return delete_document_artifacts(document_id)
-
-
-def _insert_artifact(document_id: str, r2_key: str, chash: str, page_count: int) -> None:
-    """Insert a fresh (non-stale) artifact row for ``document_id``.
-
-    ``owner_id`` defaults to ``auth.uid()`` in the schema (RLS WITH CHECK), so
-    it is never set from here.
-    """
+def _candidate_cleanup_row(expected_key: str, verified_owner: str) -> dict | None:
+    """Return the durable candidate row for one exact generation key."""
     try:
-        _artifact_table().insert(
+        rows = (
+            _server_sb()
+            .table("pdf_artifact_cleanup_queue")
+            .select(
+                "id, document_id, r2_key, content_hash, generation_id, not_before"
+            )
+            .eq("owner_id", verified_owner)
+            .eq("r2_key", expected_key)
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+    except Exception:
+        return None
+    if len(rows) != 1 or not isinstance(rows[0], dict):
+        return None
+    row = rows[0]
+    return {
+        "cleanup_id": row.get("id"),
+        "document_id": row.get("document_id"),
+        "r2_key": row.get("r2_key"),
+        "content_hash": row.get("content_hash"),
+        "generation_id": row.get("generation_id"),
+        "not_before": row.get("not_before"),
+    }
+
+
+def _discard_upload_candidate(expected_key: str, verified_owner: str) -> None:
+    """Best-effort immediate cleanup after an explicit non-publication result."""
+    row = _candidate_cleanup_row(expected_key, verified_owner)
+    if row is not None:
+        delete_detached_artifacts([row], strict=False, force=True)
+
+
+def _reconcile_publication(
+    *,
+    document_id: str,
+    document_revision: object,
+    chash: str,
+    expected_key: str,
+    verified_owner: str,
+    dependency_document_id: str | None,
+    dependency_revision: object | None,
+) -> dict | None:
+    """Resolve an ambiguous publish response without deleting a possible winner."""
+    winner = _resolve_current_artifact(
+        document_id=document_id,
+        document_revision=document_revision,
+        chash=chash,
+        owner_id=verified_owner,
+        dependency_document_id=dependency_document_id,
+        dependency_revision=dependency_revision,
+    )
+    if winner is None:
+        return None
+    winner_key = _validated_row_key(winner, verified_owner)
+    if winner_key != expected_key:
+        _discard_upload_candidate(expected_key, verified_owner)
+    return {
+        **winner,
+        "status": "published" if winner_key == expected_key else "cached",
+        "artifacts": [],
+    }
+
+
+def _insert_artifact(
+    document_id: str,
+    r2_key: str,
+    chash: str,
+    page_count: int,
+    document_revision: object,
+    generation_id: str,
+    dependency_document_id: str | None = None,
+    dependency_revision: object | None = None,
+) -> dict:
+    """Publish server-authored artifact metadata under document-revision CAS."""
+    verified_owner = _verified_owner_id()
+    generation = _canonical_uuid(generation_id, field="generation id")
+    expected_key = _r2_key(verified_owner, document_id, chash, generation)
+    if r2_key != expected_key:
+        raise StorageError("PDF artifact publication key mismatch")
+    rpc_error: Exception | None = None
+    try:
+        response = _server_sb().rpc(
+            "publish_pdf_artifact",
             {
-                "document_id": document_id,
-                "r2_key": r2_key,
-                "content_hash": chash,
-                "page_count": int(page_count),
-                "stale": False,
-            }
-        ).execute()
+                "p_owner_id": verified_owner,
+                "p_document_id": document_id,
+                "p_document_revision": document_revision,
+                "p_content_hash": chash,
+                "p_generation_id": generation,
+                "p_page_count": int(page_count),
+                "p_dependency_document_id": dependency_document_id,
+                "p_dependency_revision": dependency_revision,
+            },
+        ).execute().data
     except Exception as exc:  # noqa: BLE001 — normalize database transport errors
+        rpc_error = exc
+        response = None
+
+    result = response[0] if isinstance(response, list) and response else response
+    if rpc_error is not None or not isinstance(result, dict):
+        # A transport failure or malformed body is ambiguous: the transaction
+        # may already have committed. Resolve authoritative metadata first and
+        # never directly delete the prospective winner. If resolution is still
+        # a miss, the candidate outbox remains the cleanup authority.
+        try:
+            reconciled = _reconcile_publication(
+                document_id=document_id,
+                document_revision=document_revision,
+                chash=chash,
+                expected_key=expected_key,
+                verified_owner=verified_owner,
+                dependency_document_id=dependency_document_id,
+                dependency_revision=dependency_revision,
+            )
+        except ArtifactRevisionConflict:
+            raise
+        except ArtifactAccountUnavailable:
+            raise
+        except Exception as exc:
+            cause = rpc_error or exc
+            raise StorageError("PDF artifact publication reconciliation failed") from cause
+        if reconciled is not None:
+            return reconciled
+        if rpc_error is not None:
+            raise StorageError(
+                f"PDF artifact publication failed: {type(rpc_error).__name__}"
+            ) from rpc_error
+        raise StorageError("PDF artifact publication returned invalid evidence")
+
+    status = result.get("status")
+    if status == "revision_conflict":
+        _discard_upload_candidate(expected_key, verified_owner)
+        raise ArtifactRevisionConflict("document changed during PDF render")
+    if status not in {"published", "cached"}:
+        _discard_upload_candidate(expected_key, verified_owner)
+        if result.get("code") == "account_unavailable":
+            raise ArtifactAccountUnavailable("account is unavailable")
+        raise StorageError(str(result.get("code") or "PDF artifact publication blocked"))
+
+    try:
+        result_key = _validated_row_key(result, verified_owner)
+        result_page_count = int(result.get("page_count") or 0)
+        evidence_valid = (
+            result.get("document_id") == document_id
+            and result.get("content_hash") == chash
+            and result_page_count >= 1
+        )
+    except (StorageError, TypeError, ValueError):
+        evidence_valid = False
+        result_key = ""
+    if not evidence_valid:
+        reconciled = _reconcile_publication(
+            document_id=document_id,
+            document_revision=document_revision,
+            chash=chash,
+            expected_key=expected_key,
+            verified_owner=verified_owner,
+            dependency_document_id=dependency_document_id,
+            dependency_revision=dependency_revision,
+        )
+        if reconciled is not None:
+            return reconciled
+        raise StorageError("PDF artifact publication evidence mismatch")
+
+    discard_key = result.get("discard_r2_key")
+    if discard_key is not None:
+        if discard_key != expected_key or result_key == expected_key:
+            raise StorageError("PDF artifact discard evidence mismatch")
+        _discard_upload_candidate(expected_key, verified_owner)
+    cleanup = result.get("artifacts") or []
+    if not isinstance(cleanup, list) or any(not isinstance(row, dict) for row in cleanup):
+        raise StorageError("PDF artifact publication cleanup evidence is invalid")
+    # Publication is authoritative even if cleanup of superseded objects is
+    # temporarily deferred; the durable queue is consumed by request retries
+    # and the autonomous cleanup worker.
+    delete_detached_artifacts(cleanup, strict=False)
+    return result
+
+
+def _register_upload_candidate(
+    *,
+    document_id: str,
+    document_revision: object,
+    chash: str,
+    generation_id: str,
+    dependency_document_id: str | None = None,
+    dependency_revision: object | None = None,
+) -> dict:
+    """Persist cleanup ownership for a unique key before any R2 PUT."""
+    owner = _verified_owner_id()
+    expected_key = _r2_key(owner, document_id, chash, generation_id)
+    try:
+        response = _server_sb().rpc(
+            "register_pdf_upload_candidate",
+            {
+                "p_owner_id": owner,
+                "p_document_id": document_id,
+                "p_document_revision": document_revision,
+                "p_content_hash": chash,
+                "p_generation_id": generation_id,
+                "p_dependency_document_id": dependency_document_id,
+                "p_dependency_revision": dependency_revision,
+            },
+        ).execute().data
+    except Exception as exc:  # noqa: BLE001 - normalize database transport errors
         raise StorageError(
-            f"PDF artifact insert failed: {type(exc).__name__}"
+            f"PDF upload candidate registration failed: {type(exc).__name__}"
         ) from exc
+    result = response[0] if isinstance(response, list) and response else response
+    if not isinstance(result, dict):
+        raise StorageError("PDF upload candidate registration returned invalid evidence")
+    if result.get("status") == "revision_conflict":
+        raise ArtifactRevisionConflict("document changed during PDF render")
+    if result.get("status") != "registered":
+        if result.get("code") == "account_unavailable":
+            raise ArtifactAccountUnavailable("account is unavailable")
+        raise StorageError("PDF upload candidate registration was blocked")
+    if (
+        result.get("document_id") != document_id
+        or result.get("content_hash") != chash
+        or result.get("generation_id") != generation_id
+        or result.get("r2_key") != expected_key
+    ):
+        raise StorageError("PDF upload candidate evidence mismatch")
+    _canonical_uuid(result.get("cleanup_id"), field="cleanup id")
+    return result
 
 
 def build_cv_pdf(
@@ -504,6 +1197,7 @@ def build_cv_pdf(
     density: str = "normal",
     template: str = "classic",
     paper: str = "white",
+    document_revision: object,
 ) -> tuple[RenderedPdf, BuiltPdf | None]:
     """Cache-aware CV build (R2 path). Returns ``(rendered, built)``.
 
@@ -526,16 +1220,37 @@ def build_cv_pdf(
         raise StorageError("artifact owner does not match the verified request")
     document_id = _canonical_uuid(document_id, field="document id")
     chash = content_hash(yaml_blob, accent, font, density, template, paper)
-    hit = _find_fresh_artifact(document_id, chash, verified_owner)
-    if hit is not None:
-        url = presigned_get(hit["r2_key"], filename="cv.pdf")
-        rendered = RenderedPdf(
-            overflowed=False,
-            page_count=hit.get("page_count") or 1,
-            pdf_bytes=None,
-            density=density,
+    for _repair_attempt in range(2):
+        hit = _resolve_current_artifact(
+            document_id=document_id,
+            document_revision=document_revision,
+            chash=chash,
+            owner_id=verified_owner,
         )
-        return rendered, BuiltPdf(url=url, cached=True, page_count=rendered.page_count)
+        if hit is None:
+            break
+        if _r2_object_exists_strict(hit["r2_key"]):
+            url = presigned_get(hit["r2_key"], filename="cv.pdf")
+            rendered = RenderedPdf(
+                overflowed=False,
+                page_count=hit.get("page_count") or 1,
+                pdf_bytes=None,
+                density=density,
+            )
+            return rendered, BuiltPdf(
+                url=url,
+                cached=True,
+                page_count=rendered.page_count,
+            )
+        outcome = _evict_broken_artifact(
+            document_id=document_id,
+            document_revision=document_revision,
+            artifact=hit,
+        )
+        if outcome == "evicted":
+            break
+    else:
+        raise StorageError("PDF cache repair did not converge")
 
     # Miss/stale → render (semaphore-bounded). render_cv may raise CvYamlError /
     # RuntimeError, which the route maps to 400/503.
@@ -550,20 +1265,36 @@ def build_cv_pdf(
         # Never upload or cache a 2-page CV — surface the overflow verdict.
         return rendered, None
 
-    key = _r2_key(verified_owner, document_id, chash)
-    # Fail closed before upload: superseded personal-data objects and metadata
-    # must be gone before a replacement can become authoritative.
-    delete_document_artifacts(document_id)
-    put_pdf(key, rendered.pdf_bytes or b"", filename="cv.pdf")
+    generation_id = str(uuid.uuid4())
+    candidate = _register_upload_candidate(
+        document_id=document_id,
+        document_revision=document_revision,
+        chash=chash,
+        generation_id=generation_id,
+    )
+    key = candidate["r2_key"]
     try:
-        _insert_artifact(document_id, key, chash, rendered.page_count)
+        put_pdf(key, rendered.pdf_bytes or b"", filename="cv.pdf")
     except Exception:
-        # The upload is not reachable from application metadata if INSERT
-        # fails. Remove it immediately rather than orphaning personal data.
-        delete_pdf(key)
+        # PUT failures are ambiguous at the network boundary. The registered
+        # generation stays in the durable outbox and is reclaimed after its
+        # build lease instead of risking a late-write orphan.
         raise
-    url = presigned_get(key, filename="cv.pdf")
-    built = BuiltPdf(url=url, cached=False, page_count=rendered.page_count)
+    publication = _insert_artifact(
+        document_id,
+        key,
+        chash,
+        rendered.page_count,
+        document_revision,
+        generation_id,
+    )
+    published_key = publication["r2_key"]
+    url = presigned_get(published_key, filename="cv.pdf")
+    built = BuiltPdf(
+        url=url,
+        cached=publication.get("status") == "cached",
+        page_count=int(publication.get("page_count") or rendered.page_count),
+    )
     return rendered, built
 
 
@@ -573,6 +1304,9 @@ def build_cover_letter_pdf(
     owner_id: str,
     cache_key_text: str,
     render_doc: dict[str, Any],
+    document_revision: object,
+    dependency_document_id: str | None = None,
+    dependency_revision: object | None = None,
     base_url: str = "",
 ) -> BuiltPdf:
     """Cache-aware cover-letter build (R2 path). Multi-page allowed.
@@ -591,26 +1325,66 @@ def build_cover_letter_pdf(
     if _canonical_uuid(owner_id, field="owner id") != verified_owner:
         raise StorageError("artifact owner does not match the verified request")
     document_id = _canonical_uuid(document_id, field="document id")
-    chash = content_hash(cache_key_text, "", "", "letter")
-    hit = _find_fresh_artifact(document_id, chash, verified_owner)
-    if hit is not None:
-        return BuiltPdf(
-            url=presigned_get(hit["r2_key"], filename="cover-letter.pdf"),
-            cached=True,
-            page_count=hit.get("page_count") or 1,
+    chash = cover_letter_content_hash(cache_key_text)
+    for _repair_attempt in range(2):
+        hit = _resolve_current_artifact(
+            document_id=document_id,
+            document_revision=document_revision,
+            chash=chash,
+            owner_id=verified_owner,
+            dependency_document_id=dependency_document_id,
+            dependency_revision=dependency_revision,
         )
+        if hit is None:
+            break
+        if _r2_object_exists_strict(hit["r2_key"]):
+            return BuiltPdf(
+                url=presigned_get(hit["r2_key"], filename="cover-letter.pdf"),
+                cached=True,
+                page_count=hit.get("page_count") or 1,
+            )
+        outcome = _evict_broken_artifact(
+            document_id=document_id,
+            document_revision=document_revision,
+            artifact=hit,
+        )
+        if outcome == "evicted":
+            break
+    else:
+        raise StorageError("cover-letter PDF cache repair did not converge")
 
     pdf_bytes = render_cover_letter(render_doc, base_url=base_url)
     page_count = _count_pdf_pages(pdf_bytes)
-    key = _r2_key(verified_owner, document_id, chash)
-    delete_document_artifacts(document_id)
-    put_pdf(key, pdf_bytes, filename="cover-letter.pdf")
+    generation_id = str(uuid.uuid4())
+    candidate = _register_upload_candidate(
+        document_id=document_id,
+        document_revision=document_revision,
+        chash=chash,
+        generation_id=generation_id,
+        dependency_document_id=dependency_document_id,
+        dependency_revision=dependency_revision,
+    )
+    key = candidate["r2_key"]
     try:
-        _insert_artifact(document_id, key, chash, page_count)
+        put_pdf(key, pdf_bytes, filename="cover-letter.pdf")
     except Exception:
-        delete_pdf(key)
         raise
-    return BuiltPdf(url=presigned_get(key, filename="cover-letter.pdf"), cached=False, page_count=page_count)
+    publication = _insert_artifact(
+        document_id,
+        key,
+        chash,
+        page_count,
+        document_revision,
+        generation_id,
+        dependency_document_id,
+        dependency_revision,
+    )
+    published_key = publication["r2_key"]
+    return BuiltPdf(
+        url=presigned_get(published_key, filename="cover-letter.pdf"),
+        cached=publication.get("status") == "cached",
+        page_count=int(publication.get("page_count") or page_count),
+    )
 
 
 def _count_pdf_pages(pdf_bytes: bytes) -> int:

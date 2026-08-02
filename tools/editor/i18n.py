@@ -669,8 +669,8 @@ STRINGS: dict[str, dict[str, str]] = {
     "jobs.status_aria": {"en": "Job status", "de": "Jobstatus"},
     "jobs.delete_aria": {"en": "Delete job", "de": "Job löschen"},
     "jobs.delete_tooltip": {
-        "en": "Delete this job (your tailored docs are kept)",
-        "de": "Diesen Job löschen (angepasste Dokumente bleiben erhalten)",
+        "en": "Delete this unused job",
+        "de": "Diesen ungenutzten Job löschen",
     },
     "jobs.downstream.tailor": {"en": "ATS check", "de": "ATS-Prüfung"},
     "jobs.downstream.tailor_aria": {"en": "Run ATS check for this saved job", "de": "ATS-Prüfung für diesen gespeicherten Job ausführen"},
@@ -869,7 +869,10 @@ STRINGS: dict[str, dict[str, str]] = {
     "jobs.status.saved": {"en": "Saved", "de": "Gespeichert"},
     "jobs.status.open": {"en": "Open", "de": "Offen"},
     "jobs.status.speculative": {"en": "Speculative", "de": "Initiativ"},
-    "jobs.status.applied": {"en": "Applied", "de": "Beworben"},
+    "jobs.status.applied": {
+        "en": "Unverified legacy application note",
+        "de": "Ungeprüfter alter Bewerbungsvermerk",
+    },
     "jobs.status.closed": {"en": "Closed", "de": "Geschlossen"},
     # Card / detail chrome.
     "jobs.note_label": {"en": "Your note", "de": "Deine Notiz"},
@@ -880,7 +883,7 @@ STRINGS: dict[str, dict[str, str]] = {
     "jobs.card.details": {"en": "Details", "de": "Details"},
     "jobs.card.open_detail": {"en": "Open job details", "de": "Jobdetails öffnen"},
     "jobs.card.open": {"en": "Open", "de": "Öffnen"},
-    "jobs.card.generate": {"en": "Generate", "de": "Erzeugen"},
+    "jobs.card.generate": {"en": "Build application", "de": "Bewerbung erstellen"},
     "jobs.untitled": {"en": "Untitled job", "de": "Unbenannter Job"},
     "jobs.company_missing": {"en": "Company not detected", "de": "Unternehmen nicht erkannt"},
     "jobs.error.load": {"en": "Could not load saved jobs.", "de": "Gespeicherte Jobs konnten nicht geladen werden."},
@@ -946,7 +949,6 @@ STRINGS: dict[str, dict[str, str]] = {
     "jobs.packet.packet": {"en": "Packet", "de": "Paket"},
     "jobs.packet.archived": {"en": "Archived packet", "de": "Archiviertes Paket"},
     "jobs.packet.stale": {"en": "Stale packet", "de": "Veraltetes Paket"},
-    "jobs.packet.applied_external": {"en": "Applied externally", "de": "Extern beworben"},
     "jobs.packet.incomplete": {"en": "Incomplete packet", "de": "Unvollständiges Paket"},
     "jobs.packet.archive": {"en": "Archive", "de": "Archivieren"},
     "jobs.packet.regenerate": {"en": "Regenerate", "de": "Neu erzeugen"},
@@ -985,8 +987,8 @@ STRINGS: dict[str, dict[str, str]] = {
     "jobs.ai_unavailable": {"en": "AI is temporarily unavailable. Try again shortly.", "de": "KI ist vorübergehend nicht verfügbar. Versuche es in Kürze erneut."},
     "jobs.request_failed": {"en": "Request failed", "de": "Anfrage fehlgeschlagen"},
     "jobs.delete_confirm": {
-        "en": "Delete this job? Your tailored CVs and letters are kept, just unlinked.",
-        "de": "Diesen Job löschen? Angepasste Lebensläufe und Anschreiben bleiben erhalten und werden nur entknüpft.",
+        "en": "Delete this unused job? Jobs with application history are protected; mark those closed instead.",
+        "de": "Diesen ungenutzten Job löschen? Jobs mit Bewerbungsverlauf sind geschützt; markiere sie stattdessen als geschlossen.",
     },
     "jobs.delete_failed": {"en": "Couldn't delete that job.", "de": "Dieser Job konnte nicht gelöscht werden."},
     "jobs.delete_network": {"en": "Network error deleting job.", "de": "Netzwerkfehler beim Löschen des Jobs."},
@@ -1050,6 +1052,14 @@ STRINGS: dict[str, dict[str, str]] = {
     "cl.save_edits": {"en": "Save edits", "de": "Änderungen speichern"},
     "cl.feedback.pick_cv": {"en": "Pick a source CV first.", "de": "Wähle zuerst einen Quell-Lebenslauf."},
     "cl.feedback.paste_jd": {"en": "Paste the job description.", "de": "Füge die Stellenbeschreibung ein."},
+    "cl.feedback.job_not_ready": {
+        "en": "The selected saved job is not loaded. Select it again before generating.",
+        "de": "Der ausgewählte gespeicherte Job ist nicht geladen. Wähle ihn vor der Generierung erneut aus.",
+    },
+    "cl.feedback.job_load_failed": {
+        "en": "Couldn't load the selected saved job. Select it again before generating.",
+        "de": "Der ausgewählte gespeicherte Job konnte nicht geladen werden. Wähle ihn vor der Generierung erneut aus.",
+    },
     "cl.feedback.verified": {
         "en": "Every name and number was verified against your CV.",
         "de": "Jeder Name und jede Zahl wurde gegen deinen Lebenslauf geprüft.",

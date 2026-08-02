@@ -32,7 +32,63 @@
     return v && v !== key ? v : fallback;
   }
 
-  var state = { cvId: null, letterId: null, docs: [], jobs: [], jobId: null, autoJdJobId: null, autoJdText: "", jdDirty: false, selectedJob: null, filter: "cover_letter", loading: true, dirty: false, selectionReq: 0, generationReq: 0, previewReq: 0, saveReq: 0, downloadReq: 0, jobReq: 0, packetLineage: null, previewWanted: false };
+  function localText(en, de) {
+    var lang = window.OnePagerI18n && typeof window.OnePagerI18n.getLang === "function"
+      ? window.OnePagerI18n.getLang()
+      : (document.documentElement.lang || "en");
+    return String(lang || "en").toLowerCase().slice(0, 2) === "de" ? de : en;
+  }
+
+  function applyLocalMarkup(root) {
+    var scope = root || document;
+    var de = localText("en", "de") === "de";
+    scope.querySelectorAll("[data-local-en]").forEach(function (node) {
+      node.textContent = node.getAttribute(de ? "data-local-de" : "data-local-en") || "";
+    });
+    scope.querySelectorAll("[data-local-aria-en]").forEach(function (node) {
+      node.setAttribute("aria-label", node.getAttribute(de ? "data-local-aria-de" : "data-local-aria-en") || "");
+    });
+  }
+
+  function requestedContextId(name) {
+    try {
+      var id = new URLSearchParams(window.location.search || "").get(name);
+      return UUID_RE.test(id || "") ? id : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  var state = {
+    cvId: null,
+    sourceCvId: requestedContextId("source_cv_id"),
+    requestedCvId: requestedContextId("cv_id") || requestedContextId("source_cv_id"),
+    letterId: null,
+    letterData: null,
+    cvs: [],
+    docs: [],
+    jobs: [],
+    jobId: null,
+    autoJdJobId: null,
+    autoJdText: "",
+    jdDirty: false,
+    selectedJob: null,
+    filter: "cover_letter",
+    loading: true,
+    dirty: false,
+    letterRevision: null,
+    selectionReq: 0,
+    generationReq: 0,
+    previewReq: 0,
+    saveReq: 0,
+    saveInFlight: null,
+    saveLetterId: null,
+    saveRequested: false,
+    downloadReq: 0,
+    jobReq: 0,
+    packetLineage: null,
+    previewWanted: false,
+  };
 
   function requestedLetterId() {
     try {
@@ -56,8 +112,124 @@
       var url = new URL(window.location.href);
       if (UUID_RE.test(jobId || "")) url.searchParams.set("job_id", jobId);
       else url.searchParams.delete("job_id");
+      if (UUID_RE.test(state.cvId || "")) url.searchParams.set("cv_id", state.cvId);
+      if (UUID_RE.test(state.sourceCvId || "")) url.searchParams.set("source_cv_id", state.sourceCvId);
       window.history.replaceState({}, "", url.pathname + url.search + url.hash);
     } catch (_) {}
+    syncLifecycleLinks();
+  }
+
+  function syncLetterIdUrl(letterId) {
+    try {
+      var url = new URL(window.location.href);
+      if (UUID_RE.test(letterId || "")) url.searchParams.set("id", letterId);
+      else url.searchParams.delete("id");
+      if (UUID_RE.test(state.jobId || "")) url.searchParams.set("job_id", state.jobId);
+      else url.searchParams.delete("job_id");
+      if (UUID_RE.test(state.cvId || "")) url.searchParams.set("cv_id", state.cvId);
+      if (UUID_RE.test(state.sourceCvId || "")) url.searchParams.set("source_cv_id", state.sourceCvId);
+      window.history.replaceState({}, "", url.pathname + url.search + url.hash);
+    } catch (_) {}
+  }
+
+  function contextHref(path, options) {
+    options = options || {};
+    try {
+      var url = new URL(path, window.location.origin);
+      var jobId = options.jobId || state.jobId;
+      var cvId = options.cvId || state.cvId;
+      var sourceCvId = options.sourceCvId || state.sourceCvId || state.cvId;
+      if (UUID_RE.test(jobId || "")) url.searchParams.set("job_id", jobId);
+      if (UUID_RE.test(cvId || "")) url.searchParams.set("cv_id", cvId);
+      if (UUID_RE.test(sourceCvId || "")) url.searchParams.set("source_cv_id", sourceCvId);
+      if (options.id && UUID_RE.test(options.id)) url.searchParams.set("id", options.id);
+      return url.pathname + url.search;
+    } catch (_) {
+      return path;
+    }
+  }
+
+  function selectedCvName() {
+    var sel = $("#cl-cv");
+    return sel && sel.selectedOptions && sel.selectedOptions[0]
+      ? sel.selectedOptions[0].textContent
+      : "";
+  }
+
+  function ownsCvId(cvId) {
+    return UUID_RE.test(cvId || "") && state.cvs.some(function (cv) {
+      return cv && cv.id === cvId;
+    });
+  }
+
+  function hasImmutableReviewEvidence(lineage) {
+    if (!lineage || typeof lineage !== "object") return false;
+    var reviewId = lineage.cover_letter_review_id || lineage.review_id;
+    return lineage.document_role === "cover_letter" &&
+      UUID_RE.test(lineage.packet_id || "") &&
+      packetState(lineage) === "packet_created" &&
+      lineage.review_status === "reviewed" &&
+      lineage.cover_letter_review_status === "confirmed" &&
+      typeof lineage.cover_letter_review_confirmed_at === "string" &&
+      !!lineage.cover_letter_review_confirmed_at.trim() &&
+      typeof reviewId === "string" && !!reviewId.trim() &&
+      lineage.cover_letter_id === state.letterId &&
+      ownsCvId(lineage.source_cv_id) &&
+      ownsCvId(lineage.tailored_cv_id) &&
+      lineage.source_cv_id !== lineage.tailored_cv_id;
+  }
+
+  function syncLifecycleLinks() {
+    var job = $("#cl-flow-job");
+    var source = $("#cl-flow-source");
+    var review = $("#cl-flow-review");
+    var backApplication = $("#cl-back-application");
+    var sourceCvId = state.sourceCvId || state.cvId;
+    var lifecycle = $("#cl-lifecycle");
+    if (lifecycle) {
+      var jobStep = lifecycle.querySelector('[data-lifecycle-stage="job"]');
+      var sourceStep = lifecycle.querySelector('[data-lifecycle-stage="source-cv"]');
+      var reviewStep = lifecycle.querySelector('[data-lifecycle-stage="review"]');
+      var reviewed = !state.dirty && hasImmutableReviewEvidence(state.packetLineage);
+      if (jobStep) jobStep.classList.toggle("is-complete", UUID_RE.test(state.jobId || ""));
+      if (sourceStep) sourceStep.classList.toggle("is-complete", UUID_RE.test(sourceCvId || ""));
+      if (reviewStep) reviewStep.classList.toggle("is-complete", reviewed);
+    }
+    if (job) job.href = UUID_RE.test(state.jobId || "")
+      ? contextHref("/jobs", { id: state.jobId, jobId: state.jobId, cvId: state.cvId, sourceCvId: sourceCvId })
+      : contextHref("/jobs", { cvId: state.cvId, sourceCvId: sourceCvId });
+    if (source) source.href = UUID_RE.test(sourceCvId || "")
+      ? contextHref("/app", { id: sourceCvId, jobId: state.jobId, cvId: sourceCvId, sourceCvId: sourceCvId })
+      : contextHref("/app", { jobId: state.jobId });
+    if (review) review.href = contextHref("/tailor", {
+      jobId: state.jobId,
+      cvId: sourceCvId,
+      sourceCvId: sourceCvId,
+    });
+    if (backApplication) {
+      if (UUID_RE.test(state.jobId || "")) {
+        backApplication.href = contextHref("/jobs", {
+          id: state.jobId,
+          jobId: state.jobId,
+          cvId: state.cvId,
+          sourceCvId: sourceCvId,
+        });
+        backApplication.hidden = false;
+      } else {
+        backApplication.href = "/jobs";
+        backApplication.hidden = true;
+      }
+    }
+    var context = $("#cl-flow-context");
+    if (context) {
+      var jobName = state.selectedJob
+        ? [state.selectedJob.title, state.selectedJob.company].filter(Boolean).join(" @ ")
+        : "";
+      var parts = [];
+      if (jobName) parts.push(localText("Job: ", "Job: ") + jobName);
+      if (selectedCvName()) parts.push(localText("CV for letter: ", "Lebenslauf für Anschreiben: ") + selectedCvName());
+      context.textContent = parts.join(" · ");
+    }
   }
 
   function setFeedback(kind, html) {
@@ -115,7 +287,12 @@
     var job = $("#cl-packet-job");
     if (job && lineage.job_id) {
       job.hidden = false;
-      job.href = "/jobs?id=" + encodeURIComponent(lineage.job_id);
+      job.href = contextHref("/jobs", {
+        id: lineage.job_id,
+        jobId: lineage.job_id,
+        cvId: lineage.tailored_cv_id || state.cvId,
+        sourceCvId: lineage.source_cv_id || state.sourceCvId,
+      });
       job.textContent = [lineage.job_title, lineage.job_company].filter(Boolean).join(" @ ") || t("cl.packet.linked_job", "Linked job");
     } else if (job) {
       job.hidden = true;
@@ -169,8 +346,11 @@
 
   function clearLetterSelection() {
     state.letterId = null;
+    state.letterData = null;
+    state.letterRevision = null;
     state.packetLineage = null;
     state.dirty = false;
+    state.saveRequested = false;
     state.saveReq++;
     state.downloadReq++;
     $("#cl-body").value = "";
@@ -183,11 +363,14 @@
     $("#cl-preview-toggle").hidden = true;
     var body = $("#cl-body");
     if (body) body.disabled = true;
+    clearEnvelope();
     state.previewWanted = false;
     clearPreviewFrame();
     resetGenerateButton();
     updateWordCount();
     renderPacketLineage(null);
+    syncLetterIdUrl(null);
+    syncLifecycleLinks();
   }
 
   function clearPreviewFrame(preserveIntent) {
@@ -218,6 +401,145 @@
       parts.push(data.attachments.join(", "));
     }
     return parts.join(" · ");
+  }
+
+  var ENVELOPE_FIELDS = [
+    "recipient", "company", "role", "tone", "subject", "salutation", "closing", "attachments",
+  ];
+
+  function envelopeControl(field) {
+    return $("#cl-envelope-" + field.replace(/_/g, "-"));
+  }
+
+  function attachmentLines(value) {
+    if (Array.isArray(value)) {
+      return value.map(function (item) { return String(item == null ? "" : item).trim(); })
+        .filter(Boolean);
+    }
+    return String(value || "").split(/\r?\n/).map(function (item) { return item.trim(); }).filter(Boolean);
+  }
+
+  function envelopeValues() {
+    var out = {};
+    ENVELOPE_FIELDS.forEach(function (field) {
+      var control = envelopeControl(field);
+      if (field === "attachments") out[field] = attachmentLines(control ? control.value : "");
+      else out[field] = control ? control.value : "";
+    });
+    return out;
+  }
+
+  function envelopeSnapshot(body, letterId) {
+    return JSON.stringify(Object.assign({ id: letterId || state.letterId, body: body == null ? ($("#cl-body") || {}).value || "" : body }, envelopeValues()));
+  }
+
+  function setEnvelope(data) {
+    ENVELOPE_FIELDS.forEach(function (field) {
+      var control = envelopeControl(field);
+      if (!control) return;
+      control.value = field === "attachments"
+        ? attachmentLines(data && data[field]).join("\n")
+        : String(data && data[field] != null ? data[field] : "");
+    });
+    var details = $("#cl-envelope");
+    var fields = $("#cl-envelope-fields");
+    if (details) details.hidden = false;
+    if (fields) fields.disabled = false;
+  }
+
+  function clearEnvelope() {
+    ENVELOPE_FIELDS.forEach(function (field) {
+      var control = envelopeControl(field);
+      if (control) control.value = "";
+    });
+    var details = $("#cl-envelope");
+    var fields = $("#cl-envelope-fields");
+    if (details) {
+      details.hidden = true;
+      details.open = false;
+    }
+    if (fields) fields.disabled = true;
+  }
+
+  function generatedEnvelopeDefaults(data, requestSnapshot) {
+    requestSnapshot = requestSnapshot || {};
+    var payload = requestSnapshot.payload || {};
+    var language = String(data && data.language || "").toLowerCase();
+    var role = String(data && data.role || "").trim();
+    return {
+      recipient: payload.recipient || "",
+      company: data && data.company || "",
+      role: role,
+      tone: payload.tone || "auto",
+      subject: role ? (language === "de" ? "Bewerbung als " : "Application for ") + role : "",
+      salutation: "",
+      closing: "",
+      attachments: [language === "de" ? "Lebenslauf" : "CV"],
+      source_cv_id: requestSnapshot.cvId || payload.cv_id || null,
+      job_id: requestSnapshot.jobId || payload.job_id || null,
+    };
+  }
+
+  function syncLetterContext(data) {
+    data = data || {};
+    var lineage = data.packet_lineage && typeof data.packet_lineage === "object"
+      ? data.packet_lineage
+      : {};
+    var jobId = data.job_id || lineage.job_id;
+    if (Object.prototype.hasOwnProperty.call(data, "job_id") || lineage.job_id) {
+      var nextJobId = UUID_RE.test(jobId || "") ? jobId : null;
+      var jobChanged = nextJobId !== state.jobId;
+      state.jobId = nextJobId;
+      if (jobChanged) {
+        var jd = $("#cl-jd");
+        if (jd) jd.value = "";
+        state.jobReq++;
+        state.autoJdJobId = null;
+        state.autoJdText = "";
+        state.jdDirty = false;
+        state.selectedJob = null;
+      } else {
+        state.selectedJob = state.jobId
+          ? state.jobs.find(function (job) { return job.id === state.jobId; }) || state.selectedJob
+          : null;
+      }
+      populateJobSelect();
+      renderJobFullJdWarning();
+      if (jobChanged && state.jobId) loadSelectedJobDescription();
+    }
+    var sourceCvId = lineage.source_cv_id || data.source_cv_id || state.sourceCvId || state.cvId;
+    var letterCvId = data.source_cv_id || lineage.tailored_cv_id || state.cvId;
+    state.sourceCvId = ownsCvId(sourceCvId)
+      ? sourceCvId
+      : (ownsCvId(letterCvId) ? letterCvId : state.cvId);
+    var cvSelect = $("#cl-cv");
+    if (cvSelect && UUID_RE.test(letterCvId || "") && Array.prototype.some.call(cvSelect.options, function (opt) { return opt.value === letterCvId; })) {
+      state.cvId = letterCvId;
+      cvSelect.value = letterCvId;
+    }
+    syncJobIdUrl(state.jobId);
+    syncLifecycleLinks();
+  }
+
+  function refreshLetterMeta() {
+    if (!state.letterData) return;
+    state.letterData = Object.assign({}, state.letterData, envelopeValues(), {
+      body: $("#cl-body") ? $("#cl-body").value : "",
+    });
+    var meta = $("#cl-letter-meta");
+    if (meta) meta.textContent = describeLetterMeta(state.letterData);
+  }
+
+  function markLetterDirty() {
+    if (!state.letterId) return;
+    state.dirty = true;
+    state.previewReq++;
+    state.downloadReq++;
+    if (state.previewWanted) clearPreviewFrame(true);
+    else clearPreviewFrame();
+    refreshLetterMeta();
+    updateWordCount();
+    syncLifecycleLinks();
   }
 
   function refreshPreview() {
@@ -286,6 +608,7 @@
         var sel = $("#cl-cv");
         sel.innerHTML = "";
         var cvs = data.cvs || [];
+        state.cvs = cvs;
         if (!cvs.length) {
           var opt = document.createElement("option");
           opt.value = "";
@@ -294,22 +617,45 @@
           opt.selected = true;
           sel.appendChild(opt);
           state.cvId = null;
+          state.sourceCvId = null;
+          state.requestedCvId = null;
           syncSourceCvAvailability();
           setFeedback("info", t("cl.source.empty_note", "Create or import a CV before generating a cover letter."));
           return;
         }
+        if (!ownsCvId(state.sourceCvId)) state.sourceCvId = null;
         cvs.forEach(function (cv) {
           var opt = document.createElement("option");
           opt.value = cv.id;
+          if (cv.job_id && UUID_RE.test(cv.job_id)) opt.dataset.jobId = cv.job_id;
+          if (cv.packet_lineage && UUID_RE.test(cv.packet_lineage.source_cv_id || "")) {
+            opt.dataset.sourceCvId = cv.packet_lineage.source_cv_id;
+          }
           opt.textContent = cv.name || t("lib.untitled.cv", "Untitled CV");
           sel.appendChild(opt);
         });
-        state.cvId = sel.options[0].value;
+        state.cvId = state.requestedCvId && Array.prototype.some.call(sel.options, function (opt) { return opt.value === state.requestedCvId; })
+          ? state.requestedCvId
+          : sel.options[0].value;
         sel.value = state.cvId;
+        var selected = sel.selectedOptions && sel.selectedOptions[0];
+        if (!state.sourceCvId) {
+          state.sourceCvId = selected && ownsCvId(selected.dataset.sourceCvId)
+            ? selected.dataset.sourceCvId
+            : state.cvId;
+        }
+        if (!state.jobId && selected && UUID_RE.test(selected.dataset.jobId || "")) {
+          state.jobId = selected.dataset.jobId;
+        }
+        syncJobIdUrl(state.jobId);
+        syncLifecycleLinks();
         syncSourceCvAvailability();
       })
       .catch(function () {
+        state.cvs = [];
         state.cvId = null;
+        state.sourceCvId = null;
+        state.requestedCvId = null;
         var sel = $("#cl-cv");
         if (sel) {
           sel.innerHTML = "";
@@ -321,6 +667,7 @@
           sel.appendChild(opt);
         }
         syncSourceCvAvailability();
+        syncLifecycleLinks();
         setFeedback("error", t("cl.feedback.load_cvs_failed", "Couldn't load your CVs."));
       });
   }
@@ -352,11 +699,13 @@
     if (!jobNeedsFullJd(job)) {
       note.hidden = true;
       note.innerHTML = "";
+      syncLifecycleLinks();
       return;
     }
     note.innerHTML = esc(t("jobs.selector.full_jd_warning", "This imported job still needs its full job description reviewed before scoring or generation.")) +
       ' <a href="/jobs?id=' + esc(job.id) + '">' + esc(t("jobs.selector.open_in_jobs", "Open in Jobs")) + "</a>";
     note.hidden = false;
+    syncLifecycleLinks();
   }
 
   function attachedJobNeedsFullJd() {
@@ -449,8 +798,17 @@
         state.autoJdJobId = jid;
         state.autoJdText = job.jd_text;
         state.jdDirty = false;
+        syncLifecycleLinks();
       })
-      .catch(function () {});
+      .catch(function () {
+        if (token !== state.jobReq || state.jobId !== jid) return;
+        state.autoJdJobId = null;
+        state.autoJdText = "";
+        state.jdDirty = false;
+        state.selectedJob = null;
+        renderJobFullJdWarning();
+        setFeedback("error", t("cl.feedback.job_load_failed", "Couldn't load the selected saved job. Select it again before generating."));
+      });
   }
 
   function selectJobId(jobId) {
@@ -464,7 +822,7 @@
     state.jdDirty = false;
     state.selectedJob = null;
     renderJobFullJdWarning();
-    state.selectionReq++;
+    invalidateGenerationInputs();
     populateJobSelect();
     loadSelectedJobDescription();
   }
@@ -481,6 +839,24 @@
       delete body.jd_text;
     }
     return body;
+  }
+
+  function generationRequestSnapshot() {
+    var payload = selectedJobPayload();
+    return {
+      payload: JSON.parse(JSON.stringify(payload)),
+      cvId: state.cvId,
+      sourceCvId: state.sourceCvId,
+      jobId: state.jobId,
+    };
+  }
+
+  function invalidateGenerationInputs() {
+    // Tone and recipient are part of both the persisted generation request and
+    // the displayed envelope. A response for older controls must not replace
+    // the current form state.
+    state.selectionReq++;
+    setFeedback(null);
   }
 
   // ── Recent cover letters ──────────────────────────────────────────────────
@@ -635,13 +1011,31 @@
     deleteLetter(doc.id, doc.name);
   }
 
+  function deleteWasCommitted(res) {
+    return !!(res && (res.ok || (res.status === 503 && res.body && res.body.document_deleted === true)));
+  }
+
   function deleteCv(id, name) {
     var label = name || t("lib.untitled.cv", "Untitled CV");
     if (!window.confirm(t("cl.confirm.delete_cv", "Delete \"{name}\"? This can't be undone.").replace("{name}", label))) return;
     fetch("/api/cv/" + encodeURIComponent(id), { method: "DELETE" })
-      .then(function (r) { return r.json(); })
-      .then(function () { loadLibrary(); loadCvs(); })
-      .catch(function () { setFeedback("error", t("cl.feedback.delete_cv_failed", "Couldn't delete that CV.")); });
+      .then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (body) {
+          return { status: r.status, ok: r.ok, body: body };
+        });
+      })
+      .then(function (res) {
+        if (!deleteWasCommitted(res)) {
+          throw new Error(res.body.error || (t("cl.feedback.delete_cv_failed", "Couldn't delete that CV.") + " (" + res.status + ")."));
+        }
+        state.cvs = state.cvs.filter(function (cv) { return cv.id !== id; });
+        loadLibrary();
+        loadCvs();
+        if (!res.ok) {
+          setFeedback("info", t("cl.feedback.deleted_cleanup_pending", "Deleted. PDF cleanup is pending."));
+        }
+      })
+      .catch(function (err) { setFeedback("error", esc((err && err.message) || t("cl.feedback.delete_cv_failed", "Couldn't delete that CV."))); });
   }
 
   // ── Generate ────────────────────────────────────────────────────────────
@@ -649,6 +1043,10 @@
     var cvId = $("#cl-cv").value;
     var jd = $("#cl-jd").value;
     if (!cvId) { setFeedback("error", t("cl.feedback.pick_cv", "Pick a source CV first.")); return; }
+    if (state.jobId && !(state.autoJdJobId === state.jobId && state.autoJdText && !state.jdDirty)) {
+      setFeedback("error", t("cl.feedback.job_not_ready", "The selected saved job is not loaded. Select it again before generating."));
+      return;
+    }
     if (!state.jobId && !jd.trim()) { setFeedback("error", t("cl.feedback.paste_jd", "Paste the job description.")); return; }
     if (blockOnFullJdReview()) return;
 
@@ -664,13 +1062,14 @@
         return;
       }
     }
+    var requestSnapshot = generationRequestSnapshot();
     btn.querySelector(".cl-btn-label").textContent = t("cl.generate.busy", "Generating…");
     setFeedback("info", t("cl.generate.busy_note", "Writing your letter and checking every fact against your CV…"));
 
     fetch("/api/cover-letter/generate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(selectedJobPayload())
+      body: JSON.stringify(requestSnapshot.payload)
     })
       .then(function (r) {
         return r.json().then(function (body) { return { status: r.status, body: body }; });
@@ -681,7 +1080,7 @@
           return;
         }
         if (res.status === 201) {
-          showLetter(res.body);
+          showLetter(res.body, generatedEnvelopeDefaults(res.body, requestSnapshot));
           var notes = [];
           var removed = res.body.cliches_removed || [];
           if (removed.length) {
@@ -731,10 +1130,17 @@
       });
   }
 
-  function showLetter(data) {
+  function showLetter(data, envelopeFallback) {
     if (state.letterId && state.letterId !== data.id) clearPreviewFrame();
     state.letterId = data.id;
+    var letterData = Object.assign({}, envelopeFallback || {}, data || {});
+    ENVELOPE_FIELDS.forEach(function (field) {
+      if (letterData[field] == null) letterData[field] = field === "attachments" ? [] : "";
+    });
+    state.letterData = letterData;
+    state.letterRevision = data.updated_at || null;
     state.dirty = false;
+    state.saveRequested = false;
     state.saveReq++;
     state.downloadReq++;
     var saveBtn = $("#cl-save");
@@ -745,11 +1151,14 @@
     if (previewBtn) previewBtn.disabled = false;
     $("#cl-result-name").textContent = data.name || t("lib.badge.cover", "Cover letter");
     $("#cl-result-name").classList.remove("muted");
-    $("#cl-body").value = data.body || "";
+    $("#cl-body").value = letterData.body || "";
     $("#cl-body").disabled = false;
+    setEnvelope(letterData);
     var meta = $("#cl-letter-meta");
-    if (meta) meta.textContent = describeLetterMeta(data || {});
-    renderPacketLineage(data && data.packet_lineage);
+    if (meta) meta.textContent = describeLetterMeta(letterData);
+    renderPacketLineage(letterData.packet_lineage);
+    syncLetterContext(letterData);
+    syncLetterIdUrl(state.letterId);
     $("#cl-save").hidden = false;
     $("#cl-download").hidden = false;
     $("#cl-preview-toggle").hidden = false;
@@ -775,6 +1184,8 @@
     if (previewToggle) previewToggle.disabled = true;
     var body = $("#cl-body");
     if (body) body.disabled = true;
+    var envelopeFields = $("#cl-envelope-fields");
+    if (envelopeFields) envelopeFields.disabled = true;
     resetGenerateButton();
     clearPreviewFrame();
     fetch("/api/cover-letter?id=" + encodeURIComponent(id))
@@ -800,40 +1211,116 @@
       });
   }
 
-  function saveEdits() {
-    if (!state.letterId) return Promise.resolve(false);
-    var btn = $("#cl-save");
-    btn.disabled = true;
-    var letterId = state.letterId;
+  function markPacketLineageStaleAfterPartialSave() {
+    if (!state.packetLineage) {
+      renderPacketLineage(null);
+      return;
+    }
+    var reasons = Array.isArray(state.packetLineage.stale_reasons)
+      ? state.packetLineage.stale_reasons.slice()
+      : [];
+    if (reasons.indexOf("cover_letter_stale") === -1) reasons.push("cover_letter_stale");
+    renderPacketLineage(Object.assign({}, state.packetLineage, {
+      status: "stale",
+      stale_reasons: reasons,
+    }));
+  }
+
+  function saveCurrentSnapshot(letterId) {
     var body = $("#cl-body").value;
+    var persistedPayload = JSON.parse(JSON.stringify({ id: letterId, body: body }));
+    Object.assign(persistedPayload, envelopeValues());
+    var snapshot = JSON.stringify(persistedPayload);
+    var requestPayload = Object.assign({}, persistedPayload, { revision: state.letterRevision });
     var token = ++state.saveReq;
     return fetch("/api/cover-letter", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: letterId, body: body })
+      body: JSON.stringify(requestPayload)
     })
-      .then(function (r) { return r.json().then(function (b) { return { status: r.status, body: b }; }); })
+      .then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (responseBody) {
+          return { status: r.status, body: responseBody };
+        });
+      })
       .then(function (res) {
-        if (token !== state.saveReq || state.letterId !== letterId || $("#cl-body").value !== body) return false;
-        if (res.status === 200) {
-          state.dirty = false;
-          renderPacketLineage(res.body.packet_lineage || null);
-          setFeedback("ok", t("cl.feedback.saved", "Saved."));
-          loadLibrary();
-          if (state.previewWanted) refreshPreview();
-          return true;
+        if (token !== state.saveReq || state.letterId !== letterId) return false;
+        var cleanupPending = res.status === 503 && res.body.document_updated === true && !!res.body.updated_at;
+        if (res.status !== 200 && !cleanupPending) {
+          setFeedback("error", esc(res.body.error || t("cl.feedback.save_failed", "Save failed.")));
+          return false;
         }
-        setFeedback("error", esc(res.body.error || t("cl.feedback.save_failed", "Save failed.")));
-        return false;
+
+        state.letterRevision = res.body.updated_at || state.letterRevision;
+        state.letterData = Object.assign({}, state.letterData || {}, persistedPayload);
+        var currentMatchesSnapshot = envelopeSnapshot() === snapshot;
+        state.dirty = !currentMatchesSnapshot;
+        refreshLetterMeta();
+        if (res.body.packet_lineage) renderPacketLineage(res.body.packet_lineage);
+        else if (cleanupPending) markPacketLineageStaleAfterPartialSave();
+        else renderPacketLineage(null);
+        syncLifecycleLinks();
+        loadLibrary();
+
+        if (currentMatchesSnapshot) {
+          setFeedback(
+            cleanupPending ? "info" : "ok",
+            cleanupPending
+              ? t("cl.feedback.saved_cleanup_pending", "Saved. PDF cleanup is pending; the document itself is current.")
+              : t("cl.feedback.saved", "Saved.")
+          );
+          if (state.previewWanted) refreshPreview();
+        }
+        return true;
       })
       .catch(function () {
         if (token !== state.saveReq || state.letterId !== letterId) return false;
         setFeedback("error", t("cl.feedback.save_network", "Save failed - network error."));
         return false;
-      })
-      .finally(function () {
-        if (token === state.saveReq && state.letterId === letterId) btn.disabled = false;
       });
+  }
+
+  function runSaveQueue(letterId) {
+    if (state.letterId !== letterId) return Promise.resolve(false);
+    if (!state.saveRequested) return Promise.resolve(!state.dirty);
+    state.saveRequested = false;
+    if (!state.dirty) return Promise.resolve(true);
+    return saveCurrentSnapshot(letterId).then(function (committed) {
+      if (!committed || state.letterId !== letterId) {
+        state.saveRequested = false;
+        return false;
+      }
+      if (state.saveRequested) return runSaveQueue(letterId);
+      return !state.dirty;
+    });
+  }
+
+  function saveEdits() {
+    if (!state.letterId) return Promise.resolve(false);
+    var letterId = state.letterId;
+    if (state.saveInFlight) {
+      if (state.saveLetterId === letterId) {
+        state.saveRequested = true;
+        return state.saveInFlight;
+      }
+      return state.saveInFlight.then(function () {
+        return state.letterId === letterId ? saveEdits() : false;
+      });
+    }
+
+    state.saveRequested = true;
+    state.saveLetterId = letterId;
+    var btn = $("#cl-save");
+    if (btn) btn.disabled = true;
+    var tracked = runSaveQueue(letterId).finally(function () {
+      if (state.saveInFlight !== tracked) return;
+      state.saveInFlight = null;
+      state.saveLetterId = null;
+      state.saveRequested = false;
+      if (btn && state.letterId === letterId) btn.disabled = false;
+    });
+    state.saveInFlight = tracked;
+    return tracked;
   }
 
   async function downloadPdf() {
@@ -964,13 +1451,18 @@
         });
       })
       .then(function (res) {
-        if (!res.ok) {
+        if (!deleteWasCommitted(res)) {
           throw new Error(res.body.error || (t("cl.feedback.delete_letter_failed", "Couldn't delete that letter.") + " (" + res.status + ")."));
         }
+        state.docs = state.docs.filter(function (doc) { return doc.id !== id; });
         if (state.letterId === id) {
           clearLetterSelection();
         }
+        renderLibrary();
         loadLibrary();
+        if (!res.ok) {
+          setFeedback("info", t("cl.feedback.deleted_cleanup_pending", "Deleted. PDF cleanup is pending."));
+        }
       })
       .catch(function (err) { setFeedback("error", esc((err && err.message) || t("cl.feedback.delete_letter_failed", "Couldn't delete that letter."))); });
   }
@@ -1045,12 +1537,28 @@
 
   // ── Wire up ────────────────────────────────────────────────────────────
   function init() {
+    applyLocalMarkup();
+    syncLifecycleLinks();
     $("#cl-cv").addEventListener("change", function (e) {
-      state.selectionReq++;
       state.cvId = e.target.value;
+      var selected = e.target.selectedOptions && e.target.selectedOptions[0];
+      state.sourceCvId = selected && ownsCvId(selected.dataset.sourceCvId)
+        ? selected.dataset.sourceCvId
+        : state.cvId;
+      var linkedJobId = selected && UUID_RE.test(selected.dataset.jobId || "")
+        ? selected.dataset.jobId
+        : null;
+      if (linkedJobId && linkedJobId !== state.jobId) selectJobId(linkedJobId);
+      else {
+        invalidateGenerationInputs();
+        syncJobIdUrl(state.jobId);
+      }
       syncSourceCvAvailability();
+      syncLifecycleLinks();
     });
     if ($("#cl-job")) $("#cl-job").addEventListener("change", function (e) { selectJobId(e.target.value); });
+    $("#cl-tone").addEventListener("change", invalidateGenerationInputs);
+    $("#cl-recipient").addEventListener("input", invalidateGenerationInputs);
     if ($("#cl-jd")) $("#cl-jd").addEventListener("input", function () {
       if (state.autoJdText && $("#cl-jd").value === state.autoJdText) return;
       state.jdDirty = true;
@@ -1060,25 +1568,34 @@
       state.autoJdText = "";
       populateJobSelect();
       state.jobReq++;
-      state.selectionReq++;
+      invalidateGenerationInputs();
     });
     $("#cl-generate").addEventListener("click", generate);
     $("#cl-save").addEventListener("click", saveEdits);
     $("#cl-download").addEventListener("click", downloadPdf);
     $("#cl-preview-toggle").addEventListener("click", togglePreview);
-    $("#cl-body").addEventListener("input", function () {
-      state.dirty = true;
-      state.previewReq++;
-      state.downloadReq++;
-      if (state.previewWanted) {
-        clearPreviewFrame(true);
-      } else {
-        clearPreviewFrame();
-      }
-      updateWordCount();
+    $("#cl-body").addEventListener("input", markLetterDirty);
+    document.querySelectorAll("[data-envelope-field]").forEach(function (control) {
+      control.addEventListener("input", markLetterDirty);
+      control.addEventListener("change", markLetterDirty);
     });
     document.querySelectorAll(".cl-chip").forEach(function (chip) {
       chip.addEventListener("click", function () { setFilter(chip.dataset.filter, chip); });
+    });
+    window.addEventListener("beforeunload", function (event) {
+      if (!state.dirty) return;
+      event.preventDefault();
+      event.returnValue = "";
+    });
+    document.addEventListener("click", function (event) {
+      if (!state.dirty) return;
+      var link = event.target.closest("#cl-lifecycle a, #cl-back-application");
+      if (!link) return;
+      if (!window.confirm(localText("Discard unsaved cover-letter edits?", "Ungespeicherte Anschreiben-Aenderungen verwerfen?"))) {
+        event.preventDefault();
+      } else {
+        state.dirty = false;
+      }
     });
     if (window.renderIcons) window.renderIcons(document);
     registerPaletteActions();
@@ -1088,8 +1605,10 @@
     // localise live too.
     if (window.OnePagerI18n) {
       window.OnePagerI18n.init($(".cl-topbar-right"), function () {
+        applyLocalMarkup();
         renderLibrary();
         populateJobSelect();
+        syncLifecycleLinks();
       });
     }
 

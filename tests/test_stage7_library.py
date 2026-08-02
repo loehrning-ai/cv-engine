@@ -451,6 +451,18 @@ class TestRlsScopedNoServiceRole:
                     and function_name == "_build_worker"
                 ):
                     return True
+                if (
+                    py.name == "pdf_cleanup_worker.py"
+                    and function_name == "_build_worker"
+                ):
+                    return True
+                if (
+                    py.name == "schema_compatibility_probe.py"
+                    and function_name == "_fetch_openapi"
+                ):
+                    # Release-only OpenAPI inspection reads the service key but
+                    # deliberately has no create_client exception below.
+                    return True
                 if py.name != "auth.py":
                     return False
                 if function_name == "server_supabase":
@@ -492,6 +504,10 @@ class TestRlsScopedNoServiceRole:
                         )
                         or (
                             py.name == "account_purge_worker.py"
+                            and enclosing_function(node) == "_build_worker"
+                        )
+                        or (
+                            py.name == "pdf_cleanup_worker.py"
                             and enclosing_function(node) == "_build_worker"
                         )
                     ):
@@ -574,8 +590,15 @@ class TestCrossTenantLibrary:
             if b_cv_id:
                 assert b_cv_id in b_ids, "B's own CV missing from B's library"
         finally:
-            sb_a.table("documents").delete().eq("owner_id", A_ID).execute()
+            for doc_id, doc_type in ((a_cv_id, "cv"), (a_cover_id, "cover_letter")):
+                sb_a.rpc(
+                    "delete_document_safely",
+                    {"p_document_id": doc_id, "p_document_type": doc_type},
+                ).execute()
             if b_cv_id:
                 sb_b = create_client(url, pub)
                 sb_b.postgrest.auth(B_TOKEN)
-                sb_b.table("documents").delete().eq("owner_id", B_ID).execute()
+                sb_b.rpc(
+                    "delete_document_safely",
+                    {"p_document_id": b_cv_id, "p_document_type": "cv"},
+                ).execute()

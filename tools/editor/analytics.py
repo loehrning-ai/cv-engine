@@ -52,9 +52,17 @@ def _host() -> str:
     return (os.environ.get("POSTHOG_HOST") or _DEFAULT_HOST).strip().rstrip("/")
 
 
+def _demo_mode_enabled() -> bool:
+    return (os.environ.get("ONEPAGER_DEMO_MODE") or "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
 def is_enabled() -> bool:
     """True only when a PostHog key is configured. Re-reads env every call."""
-    return bool(_api_key())
+    # Local demo sessions are process-local and must remain network-isolated
+    # even when the operator's shell exports production analytics settings.
+    return bool(_api_key()) and not _demo_mode_enabled()
 
 
 def capture(event: str, distinct_id: str, properties: dict | None = None) -> None:

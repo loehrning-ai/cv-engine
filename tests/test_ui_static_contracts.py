@@ -358,7 +358,6 @@ def test_jobs_packet_revalidation_and_review_gate_contract():
         "data-packet-state",
         "packet.status",
         "stale",
-        "applied_external",
         "regenerated",
         "document_links",
         "function renderReviewLineage",
@@ -407,6 +406,68 @@ def test_cover_letters_packet_lineage_contract():
         "renderPacketLineage(res.body.packet_lineage",
     ):
         assert token in js
+
+
+def test_frontend_async_mutations_preserve_server_truth_and_request_context():
+    jobs = _read("tools/editor/static/jobs.js")
+    tailor = _read("tools/editor/static/tailor.js")
+    cover = _read("tools/editor/static/cover-letters.js")
+    app = _read("tools/editor/static/app.js")
+
+    # Successful manual-open evidence survives only the automatic readiness
+    # refresh; explicit refreshes still clear it.
+    assert "function loadApplicationReadiness(options)" in jobs
+    assert "options.preserveManualOpenLink === true" in jobs
+    assert "function readinessMatchesAcceptedHandoff(data, evidence)" in jobs
+    assert "acceptedEvidence: {" in jobs
+
+    # An incomplete two-phase packet can be reconstructed from persisted job
+    # detail, and status mutations are physically serialized in the UI.
+    assert "function pendingCoverReviewFromPackets" in jobs
+    assert 'packetStateName(row, job) === "review_applied"' in jobs
+    assert "packet_id: packet.id" in jobs
+    assert "statusInFlight: null" in jobs
+    assert "state.statusInFlight = request" in jobs
+    assert 'select.setAttribute("aria-busy", "true")' in jobs
+    assert "state.statusInFlight !== request" in jobs
+
+    # Non-2xx JSON cannot replace a previously loaded catalog with a fake empty
+    # collection.
+    assert "res.status !== 200 || !res.body || !Array.isArray(res.body.jobs)" in jobs
+    assert "res.status !== 200 || !res.body || !Array.isArray(res.body.cvs)" in jobs
+
+    # Profile changes invalidate both late ATS responses and already-rendered
+    # evidence.
+    assert "function invalidateProfileState" in tailor
+    assert '$("#tl-profile").addEventListener("change", invalidateProfileState);' in tailor
+    profile_invalidation = tailor.split("function invalidateProfileState", 1)[1].split("function compareProfiles", 1)[0]
+    for token in ("state.reqToken++", "resetActionControls()", "clearReview()", "clearReportState()"):
+        assert token in profile_invalidation
+
+    # Generation output is bound to the dispatched inputs, and all save callers
+    # share one queued CAS chain.
+    assert "function generationRequestSnapshot" in cover
+    assert "JSON.stringify(requestSnapshot.payload)" in cover
+    assert "generatedEnvelopeDefaults(res.body, requestSnapshot)" in cover
+    assert '$("#cl-tone").addEventListener("change", invalidateGenerationInputs);' in cover
+    assert '$("#cl-recipient").addEventListener("input", invalidateGenerationInputs);' in cover
+    assert "saveInFlight: null" in cover
+    assert "function runSaveQueue" in cover
+    assert "if (state.saveInFlight)" in cover
+    assert "state.saveRequested = true" in cover
+
+    # Review completion and committed partial-success markers are fail-closed.
+    immutable = cover.split("function hasImmutableReviewEvidence", 1)[1].split("function syncLifecycleLinks", 1)[0]
+    for token in (
+        'packetState(lineage) === "packet_created"',
+        'lineage.review_status === "reviewed"',
+        'lineage.cover_letter_review_status === "confirmed"',
+        "lineage.cover_letter_review_confirmed_at",
+    ):
+        assert token in immutable
+    assert "res.body.document_updated === true" in cover
+    assert "res.body.document_deleted === true" in cover
+    assert app.count("data.document_deleted === true") >= 2
 
 
 def test_account_job_profile_defaults_are_sanitized_browser_state():
@@ -480,7 +541,12 @@ def test_tailor_preserves_linked_job_context_and_profile_defaults():
     tailor = _read("tools/editor/static/tailor.js")
 
     assert "function updateTailorLinks" in app
-    assert "params.set(\"job_id\", activeJob.id)" in app
+    assert 'requestedContextId("job_id")' in app
+    assert 'requestedContextId("source_cv_id")' in app
+    assert "const contextJobId = (activeJob && activeJob.id) || applicationContextJobId" in app
+    assert 'params.set("job_id", contextJobId)' in app
+    assert 'params.set("source_cv_id", sourceCvId)' in app
+    assert 'params.set("cv_id", activeCvId)' in app
     assert 'href === "/tailor"' in app
     assert 'id="tl-selected-job-context"' in html
     assert 'id="tl-review-lineage"' in html
@@ -532,6 +598,26 @@ def test_tailor_preserves_linked_job_context_and_profile_defaults():
     assert '("#tl-jd").addEventListener("input", function () { invalidateJobDraftState(); })' in tailor
     assert '("#tl-jd-url").addEventListener("input", function () { invalidateJobDraftState({ clearAutoJdText: true }); })' in tailor
     assert "if (options.clearAutoJdText)" in tailor
+
+
+def test_cover_letter_job_context_is_hydrated_and_generation_fails_closed():
+    cover = _read("tools/editor/static/cover-letters.js")
+
+    assert "var jobChanged = nextJobId !== state.jobId" in cover
+    assert "if (jobChanged && state.jobId) loadSelectedJobDescription()" in cover
+    assert "linkedJobId !== state.jobId) selectJobId(linkedJobId)" in cover
+    assert "state.autoJdJobId === state.jobId && state.autoJdText && !state.jdDirty" in cover
+    assert 't("cl.feedback.job_not_ready"' in cover
+
+
+def test_workflow_browser_helpers_do_not_wait_for_unreachable_network_idle():
+    workflow = _read("tests/e2e/test_workflow_contracts.py")
+    layout_helpers = _read("tests/e2e/layout_helpers.py")
+
+    assert 'wait_for_load_state("networkidle")' not in workflow
+    assert "wait_for_network_settle(page)" in workflow
+    assert 'headers: { Authorization: "Bearer " + token }' in layout_helpers
+    assert "status = page.evaluate(" in layout_helpers
 
 
 def test_command_palette_indexes_aliases_and_subpage_actions():

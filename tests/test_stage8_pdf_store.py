@@ -83,6 +83,7 @@ class FakeS3:
         self.deleted_keys: list[str] = []
         self.presign_calls = 0
         self.fail_delete = False
+        self.fail_head = False
         self.on_delete = None
 
     def put_object(self, *, Bucket, Key, Body, ContentType=None, ContentDisposition=None):  # noqa: N803
@@ -101,6 +102,18 @@ class FakeS3:
         self.objects.pop(Key, None)
         self.dispositions.pop(Key, None)
         return {}
+
+    def head_object(self, *, Bucket, Key):  # noqa: N803
+        if self.fail_head:
+            raise RuntimeError("injected R2 HEAD outage")
+        if Key not in self.objects:
+            error = RuntimeError("not found")
+            error.response = {
+                "Error": {"Code": "NoSuchKey"},
+                "ResponseMetadata": {"HTTPStatusCode": 404},
+            }
+            raise error
+        return {"ContentLength": len(self.objects[Key])}
 
     def generate_presigned_url(self, op, *, Params, ExpiresIn):  # noqa: N803
         self.presign_calls += 1
@@ -281,6 +294,30 @@ class TestStorageAbstraction:
         monkeypatch.setattr(pdf_store, "RENDER_CACHE_VERSION", "different-renderer")
         assert a != pdf_store.content_hash("blob", "#111", "sans", "normal")
 
+    def test_persisted_cv_hash_matches_default_build_appearance_contract(self):
+        import pdf_store
+
+        yaml_blob = _yaml.safe_dump(
+            {
+                **GROUNDED_CV,
+                "density": "TIGHT",
+                "template": "sidebar",
+                "paper": "creme",
+            },
+            sort_keys=False,
+        )
+
+        assert pdf_store.persisted_cv_content_hash(
+            yaml_blob, "#1f6f43", "sans"
+        ) == pdf_store.content_hash(
+            yaml_blob,
+            "#1f6f43",
+            "sans",
+            "tight",
+            "sidebar",
+            "creme",
+        )
+
     def test_put_and_presign_through_fake_client(self, monkeypatch):
         import pdf_store
 
@@ -391,8 +428,9 @@ class TestCacheHitAndStale:
         save = client.post("/api/cv", json={"id": cv_id, "content": new_yaml})
         assert save.status_code == 200, save.get_data(as_text=True)
         assert _artifacts(fake_supabase) == []
-        assert fake.objects == {}
-        assert fake.delete_calls == 1
+        assert len(fake.objects) == 1
+        assert fake.delete_calls == 0
+        assert len(fake_supabase.tables["pdf_artifact_cleanup_queue"]) == 1
 
         # Next build re-renders (content changed → new hash, no fresh hit).
         r = client.post("/api/build", json={"id": cv_id})
@@ -403,7 +441,7 @@ class TestCacheHitAndStale:
         arts = _artifacts(fake_supabase)
         assert len(arts) == 1
         assert arts[0]["stale"] is False
-        assert len(fake.objects) == 1
+        assert len(fake.objects) == 2
 
     def test_overflow_not_uploaded_or_cached(
         self, server_module, client, fake_supabase, monkeypatch
@@ -429,7 +467,7 @@ class TestCacheHitAndStale:
 #  3. Artifact lifecycle: object-first deletion, rollback, hostile-row safety.
 # ===========================================================================
 class TestArtifactLifecycle:
-    def test_document_delete_removes_object_then_row_then_document(
+    def test_document_delete_commits_guarded_row_delete_then_removes_object(
         self, server_module, client, fake_supabase, monkeypatch
     ):
         import pdf_store
@@ -440,18 +478,17 @@ class TestArtifactLifecycle:
         cv_id, _ = _seed_cv(fake_supabase)
         assert client.post("/api/build", json={"id": cv_id}).status_code == 200
 
-        def assert_sources_still_exist(_key):
-            assert any(row["id"] == cv_id for row in fake_supabase.tables["documents"])
-            assert any(
-                row["document_id"] == cv_id for row in _artifacts(fake_supabase)
-            )
+        def assert_guarded_delete_committed(_key):
+            assert not any(row["id"] == cv_id for row in fake_supabase.tables["documents"])
+            assert not any(row["document_id"] == cv_id for row in _artifacts(fake_supabase))
 
-        fake.on_delete = assert_sources_still_exist
+        fake.on_delete = assert_guarded_delete_committed
         response = client.delete(f"/api/cv/{cv_id}")
 
         assert response.status_code == 200
         assert fake.objects == {}
         assert _artifacts(fake_supabase) == []
+        assert fake_supabase.tables["pdf_artifact_cleanup_queue"] == []
         assert not any(
             row["id"] == cv_id for row in fake_supabase.tables["documents"]
         )
@@ -471,7 +508,7 @@ class TestArtifactLifecycle:
         with server_module.app.test_request_context("/api/cv"):
             g.owner_id = FAKE_OWNER
             g.access_token = "test-token"
-            assert pdf_store.delete_document_artifacts(cv_id) == 1
+            assert pdf_store.delete_document_artifacts(cv_id, force=True) == 1
             assert pdf_store.delete_document_artifacts(cv_id) == 0
 
         assert fake.delete_calls == 1
@@ -479,7 +516,7 @@ class TestArtifactLifecycle:
         assert _artifacts(fake_supabase) == []
         assert any(row["id"] == cv_id for row in fake_supabase.tables["documents"])
 
-    def test_remote_cleanup_failure_keeps_cv_change_intact(
+    def test_remote_cleanup_failure_after_guarded_delete_is_truthful(
         self, server_module, client, fake_supabase, monkeypatch
     ):
         import pdf_store
@@ -487,7 +524,41 @@ class TestArtifactLifecycle:
         _enable_r2(monkeypatch)
         fake = _inject_fake_s3(monkeypatch)
         monkeypatch.setattr(pdf_store, "render_cv_pdf", RenderSpy())
-        cv_id, old_yaml = _seed_cv(fake_supabase)
+        cv_id, _ = _seed_cv(fake_supabase)
+        assert client.post("/api/build", json={"id": cv_id}).status_code == 200
+        retained_key = next(iter(fake.objects))
+        fake.fail_delete = True
+
+        response = client.delete(f"/api/cv/{cv_id}")
+
+        assert response.status_code == 503
+        assert response.get_json() == {
+            "error": "PDF artifact storage is temporarily unavailable.",
+            "code": "artifact_cleanup_unavailable",
+            "document_deleted": True,
+        }
+        assert not any(row["id"] == cv_id for row in fake_supabase.tables["documents"])
+        assert _artifacts(fake_supabase) == []
+        assert fake.objects[retained_key].startswith(b"%PDF")
+        queued = fake_supabase.tables["pdf_artifact_cleanup_queue"]
+        assert len(queued) == 1
+        assert queued[0]["document_id"] == cv_id
+        assert queued[0]["attempt_count"] == 1
+
+        fake.fail_delete = False
+        assert client.get("/api/cvs").status_code == 200
+        assert fake_supabase.tables["pdf_artifact_cleanup_queue"] == []
+        assert retained_key not in fake.objects
+
+    def test_cv_change_commits_and_leases_remote_cleanup(
+        self, server_module, client, fake_supabase, monkeypatch
+    ):
+        import pdf_store
+
+        _enable_r2(monkeypatch)
+        fake = _inject_fake_s3(monkeypatch)
+        monkeypatch.setattr(pdf_store, "render_cv_pdf", RenderSpy())
+        cv_id, _old_yaml = _seed_cv(fake_supabase)
         assert client.post("/api/build", json={"id": cv_id}).status_code == 200
         old_key = next(iter(fake.objects))
         changed = dict(GROUNDED_CV)
@@ -505,16 +576,17 @@ class TestArtifactLifecycle:
             json={"id": cv_id, "content": new_yaml},
         )
 
-        assert response.status_code == 503
-        assert response.get_json()["code"] == "artifact_cleanup_unavailable"
+        assert response.status_code == 200
+        assert response.get_json()["cleanup_pending"] is True
         row = next(
             row for row in fake_supabase.tables["documents"] if row["id"] == cv_id
         )
-        assert row["yaml_blob"] == old_yaml
+        assert row["yaml_blob"] == new_yaml
         assert fake.objects[old_key].startswith(b"%PDF")
-        assert len(_artifacts(fake_supabase)) == 1
+        assert _artifacts(fake_supabase) == []
+        assert len(fake_supabase.tables["pdf_artifact_cleanup_queue"]) == 1
 
-    def test_insert_failure_rolls_back_new_upload(
+    def test_ambiguous_insert_failure_retains_candidate_for_durable_cleanup(
         self, server_module, client, fake_supabase, monkeypatch
     ):
         import pdf_store
@@ -537,9 +609,10 @@ class TestArtifactLifecycle:
         assert response.status_code == 200
         assert response.headers["Content-Type"] == "application/pdf"
         assert fake.put_calls == 1
-        assert fake.delete_calls == 1
-        assert fake.objects == {}
+        assert fake.delete_calls == 0
+        assert len(fake.objects) == 1
         assert _artifacts(fake_supabase) == []
+        assert len(fake_supabase.tables["pdf_artifact_cleanup_queue"]) == 1
 
     def test_hostile_cache_row_is_never_presigned_or_deleted(
         self, server_module, client, fake_supabase, monkeypatch
@@ -614,12 +687,14 @@ class TestArtifactLifecycle:
         )
 
         assert deleted.status_code == 503
-        assert account.status_code == 503
+        assert account.status_code == 200
+        assert account.get_json()["invalid_artifact_count"] == 1
+        assert account.get_json()["cleanup_pending"] is True
         assert fake.delete_calls == 0
         row = next(
             row for row in fake_supabase.tables["documents"] if row["id"] == cv_id
         )
-        assert row["deleted_at"] is None
+        assert row["deleted_at"] is not None
 
     def test_preview_threads_verified_owner_to_renderer(
         self, server_module, client, fake_supabase, monkeypatch
@@ -926,4 +1001,7 @@ class TestPdfArtifactsRLS:
             assert not (seen or []), "RLS leak: B can read A's pdf_artifact"
         finally:
             sb_a.table("pdf_artifacts").delete().eq("id", a_art_id).execute()
-            sb_a.table("documents").delete().eq("id", a_doc_id).execute()
+            sb_a.rpc(
+                "delete_document_safely",
+                {"p_document_id": a_doc_id, "p_document_type": "cv"},
+            ).execute()

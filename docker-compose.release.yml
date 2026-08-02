@@ -11,6 +11,9 @@ services:
   purge-worker:
     image: ${ONEPAGER_APP_IMAGE:?ONEPAGER_APP_IMAGE must be an immutable sha256 reference}
 
+  pdf-cleanup-worker:
+    image: ${ONEPAGER_APP_IMAGE:?ONEPAGER_APP_IMAGE must be an immutable sha256 reference}
+
   caddy:
     build: !reset null
     image: ${ONEPAGER_CADDY_IMAGE:?ONEPAGER_CADDY_IMAGE must be an immutable sha256 reference}

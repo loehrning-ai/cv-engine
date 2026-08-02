@@ -16,6 +16,7 @@
   const $  = (sel) => document.querySelector(sel);
   const $$ = (sel) => Array.from(document.querySelectorAll(sel));
   const clamp = (n, min, max) => Math.max(min, Math.min(max, n));
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
   // ──────────────────────────────────────────────────────────────────────
   //  CONSTANTS
@@ -38,6 +39,8 @@
   const NEW_CV_DEFAULTS_KEY = "cv.editor.new_cv_defaults";
   const TEMPLATE_IDS = ["classic", "modern", "sidebar", "executive", "technical", "ats-compact", "consulting", "minimal"];
   const VIEW_KEY     = "cv.editor.view";
+  const FORM_MODE_KEY = "cv.editor.formMode";
+  const ACTIVE_SECTION_KEY = "cv.editor.activeSection";
   const AUTO_KEY     = "cv.editor.autoRender";
   const LINT_KEY     = "cv.editor.lintOnSave";
   const CV_ID_KEY    = "cv.editor.activeId";  // active document UUID (Stage 3)
@@ -149,6 +152,9 @@
   let lastPagedCount = null;
   let viewMode = localStorage.getItem(VIEW_KEY) || "form";
   if (!["form", "yaml"].includes(viewMode)) viewMode = "form";
+  let formMode = localStorage.getItem(FORM_MODE_KEY) || "focus";
+  if (!["focus", "overview"].includes(formMode)) formMode = "focus";
+  let activeFormSection = null;
 
   // Auto-render toggle: Live (default) re-renders on debounced edits;
   // Manual waits for the user to click Refresh.
@@ -168,13 +174,17 @@
   // first /api/cvs load resolves it (null = "server picks most-recent").
   // The name is shown in the topbar picker. Both are kept in sync by the
   // document picker below.
-  let requestedCvId = (() => {
+  const requestedContextId = (name) => {
     try {
-      return new URLSearchParams(window.location.search || "").get("id") || null;
+      const value = new URLSearchParams(window.location.search || "").get(name);
+      return UUID_RE.test(value || "") ? value : null;
     } catch (_) {
       return null;
     }
-  })();
+  };
+  let requestedCvId = requestedContextId("id");
+  const applicationContextJobId = requestedContextId("job_id");
+  const applicationContextSourceCvId = requestedContextId("source_cv_id") || requestedContextId("cv_id");
   let activeCvId = localStorage.getItem(CV_ID_KEY) || null;
   let activeCvName = "My CV";
 
@@ -682,6 +692,261 @@
     return fallback != null ? fallback : key;
   }
 
+  // ──────────────────────────────────────────────────────────────────────
+  //  FORM MODE — Focus shows one section; Overview preserves the complete
+  //  form DOM and the existing collapse/scroll contracts. Mode is global,
+  //  while the active section is namespaced per CV variant.
+  // ──────────────────────────────────────────────────────────────────────
+  const SECTION_LABELS_DE = {
+    header: "Kopfzeile",
+    structure: "Aufbau",
+    experience: "Berufserfahrung",
+    education: "Ausbildung",
+    skills: "Kompetenzen",
+    projects: "Projekte",
+    leadership: "Führung",
+    others: "Weitere Angaben",
+  };
+
+  function editorLanguage() {
+    if (window.OnePagerI18n && typeof window.OnePagerI18n.getLang === "function") {
+      return window.OnePagerI18n.getLang();
+    }
+    return document.documentElement.getAttribute("lang") || "en";
+  }
+
+  function editorCopy(en, de) {
+    return editorLanguage() === "de" ? de : en;
+  }
+
+  function localizedSectionLabel(key, fallback) {
+    if (editorLanguage() === "de" && SECTION_LABELS_DE[key]) return SECTION_LABELS_DE[key];
+    return fallback || key.charAt(0).toUpperCase() + key.slice(1);
+  }
+
+  function activeSectionStorageKey() {
+    return `${ACTIVE_SECTION_KEY}::${activeCvId || "default"}`;
+  }
+
+  function loadActiveFormSection() {
+    try {
+      return localStorage.getItem(activeSectionStorageKey()) || null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function saveActiveFormSection(key) {
+    if (!key) return;
+    try {
+      localStorage.setItem(activeSectionStorageKey(), key);
+    } catch (_) {}
+  }
+
+  function formSections() {
+    return $$("#form-host .form-section[data-section-key]");
+  }
+
+  function sectionDisplayLabel(section) {
+    if (!section) return "";
+    const key = section.dataset.sectionKey || "";
+    const heading = section.querySelector(".form-section-title, .form-section-head h3");
+    return localizedSectionLabel(key, heading ? heading.textContent.trim() : key);
+  }
+
+  function resolveActiveFormSection(sections = formSections()) {
+    if (!sections.length) return null;
+    const requested = activeFormSection || loadActiveFormSection();
+    const active = sections.find((section) => section.dataset.sectionKey === requested) ||
+      sections.find((section) => section.dataset.sectionKey === "header") ||
+      sections[0];
+    activeFormSection = active.dataset.sectionKey;
+    saveActiveFormSection(activeFormSection);
+    return active;
+  }
+
+  function updateFocusSectionNav(sections = formSections(), active = null) {
+    const nav = $("#focus-section-nav");
+    if (!nav) return;
+    const isActive = viewMode === "form" && formMode === "focus" && sections.length > 0;
+    nav.toggleAttribute("hidden", !isActive);
+
+    const current = active || resolveActiveFormSection(sections);
+    const index = current ? sections.indexOf(current) : -1;
+    const currentNumber = index >= 0 ? index + 1 : 1;
+    const total = Math.max(1, sections.length);
+    const label = $("#focus-section-label");
+    const count = $("#focus-section-count");
+    const progress = $("#focus-section-progress");
+    const fill = progress && progress.querySelector("span");
+    const prev = $("#focus-section-prev");
+    const next = $("#focus-section-next");
+
+    if (label) label.textContent = current ? sectionDisplayLabel(current) : editorCopy("Section", "Abschnitt");
+    if (count) count.textContent = `${currentNumber} / ${total}`;
+    if (progress) {
+      progress.setAttribute("aria-valuemax", String(total));
+      progress.setAttribute("aria-valuenow", String(currentNumber));
+      progress.setAttribute(
+        "aria-valuetext",
+        editorCopy(`Section ${currentNumber} of ${total}`, `Abschnitt ${currentNumber} von ${total}`),
+      );
+    }
+    if (fill) fill.style.width = `${(currentNumber / total) * 100}%`;
+    if (prev) prev.disabled = !isActive || index <= 0;
+    if (next) next.disabled = !isActive || index < 0 || index >= sections.length - 1;
+  }
+
+  function updateFormModeCopy() {
+    const toggle = $("#form-mode-toggle");
+    if (toggle) toggle.setAttribute("aria-label", editorCopy("Form layout", "Formularansicht"));
+    const focus = $('.form-mode-btn[data-form-mode="focus"]');
+    const overview = $('.form-mode-btn[data-form-mode="overview"]');
+    if (focus) focus.textContent = "Focus";
+    if (overview) overview.textContent = editorCopy("Overview", "Übersicht");
+
+    const nav = $("#focus-section-nav");
+    if (nav) nav.setAttribute("aria-label", editorCopy("Section navigation", "Abschnittsnavigation"));
+    const prev = $("#focus-section-prev");
+    const next = $("#focus-section-next");
+    if (prev) {
+      prev.setAttribute("aria-label", editorCopy("Previous section", "Vorheriger Abschnitt"));
+      const label = prev.querySelector(".focus-section-step-label");
+      if (label) label.textContent = editorCopy("Previous", "Zurück");
+    }
+    if (next) {
+      next.setAttribute("aria-label", editorCopy("Next section", "Nächster Abschnitt"));
+      const label = next.querySelector(".focus-section-step-label");
+      if (label) label.textContent = editorCopy("Next", "Weiter");
+    }
+    const progress = $("#focus-section-progress");
+    if (progress) progress.setAttribute("aria-label", editorCopy("Form section progress", "Fortschritt der Formularabschnitte"));
+  }
+
+  function updateViewHint() {
+    const hint = $("#view-tabs-hint");
+    if (!hint) return;
+    if (viewMode === "yaml") {
+      hint.textContent = editorCopy(
+        "Raw YAML — full power. Switch to Form for guided editing.",
+        "YAML direkt bearbeiten. Für geführtes Bearbeiten zu Formular wechseln.",
+      );
+    } else if (formMode === "focus") {
+      hint.textContent = editorCopy(
+        "One section at a time. Use the outline or section controls to move.",
+        "Ein Abschnitt nach dem anderen. Navigation über Gliederung oder Abschnittssteuerung.",
+      );
+    } else {
+      hint.textContent = editorCopy(
+        "All sections in one scrollable overview. Collapse sections to reduce detail.",
+        "Alle Abschnitte in einer Übersicht. Details lassen sich einklappen.",
+      );
+    }
+  }
+
+  function applyFormMode() {
+    const sections = formSections();
+    const active = resolveActiveFormSection(sections);
+    document.body.dataset.formMode = formMode;
+
+    // Collapsed state belongs to Overview. Focus must always expose the active
+    // section's fields, while returning to Overview restores the persisted
+    // collapse choices without rewriting them.
+    if (formMode === "overview") applyCollapsedState();
+
+    const toggle = $("#form-mode-toggle");
+    if (toggle) toggle.toggleAttribute("hidden", viewMode !== "form");
+    $$(".form-mode-btn[data-form-mode]").forEach((button) => {
+      const selected = button.dataset.formMode === formMode;
+      button.classList.toggle("is-active", selected);
+      button.setAttribute("aria-pressed", selected ? "true" : "false");
+    });
+
+    sections.forEach((section) => {
+      const selected = !!active && section === active;
+      section.toggleAttribute("hidden", formMode === "focus" && !selected);
+      if (formMode === "focus" && selected) {
+        section.setAttribute("data-focus-active", "true");
+        const head = section.querySelector(".form-section-head.is-collapsible");
+        const body = section.querySelector(".form-section-body");
+        if (head && body) {
+          head.setAttribute("aria-expanded", "true");
+          body.removeAttribute("hidden");
+          section.classList.remove("is-collapsed");
+          section.dataset.collapsed = "false";
+        }
+      } else {
+        section.removeAttribute("data-focus-active");
+      }
+    });
+    updateFormModeCopy();
+    updateFocusSectionNav(sections, active);
+    updateViewHint();
+    updateCollapseAllButton();
+    updateOutlineActive();
+  }
+
+  function activateFormSection(key, opts = {}) {
+    const sections = formSections();
+    const target = sections.find((section) => section.dataset.sectionKey === key);
+    if (!target) return false;
+    activeFormSection = key;
+    saveActiveFormSection(key);
+    applyFormMode();
+
+    if (viewMode === "form" && formMode === "focus" && opts.resetScroll !== false) {
+      const host = $("#form-host");
+      requestAnimationFrame(() => {
+        if (!host) return;
+        const behavior = PREFERS_REDUCED_MOTION.matches ? "auto" : (opts.behavior || "smooth");
+        try {
+          host.scrollTo({ top: 0, behavior });
+        } catch (_) {
+          host.scrollTop = 0;
+        }
+      });
+    }
+    if (opts.scrollPreview !== false) {
+      pendingScrollTarget = key;
+      if (scrollPreviewToSection(key)) pendingScrollTarget = null;
+    }
+    highlightActiveFormSection(key);
+    window.dispatchEvent(new CustomEvent("cv:layout-changed", { detail: { reason: "focus-section" } }));
+    return true;
+  }
+
+  function stepFormSection(delta) {
+    const sections = formSections();
+    const active = resolveActiveFormSection(sections);
+    const index = active ? sections.indexOf(active) : -1;
+    const nextIndex = clamp(index + delta, 0, sections.length - 1);
+    if (index < 0 || nextIndex === index) return;
+    activateFormSection(sections[nextIndex].dataset.sectionKey);
+  }
+
+  function setFormMode(next) {
+    if (!["focus", "overview"].includes(next)) return;
+    cancelOutlineHover();
+    formMode = next;
+    try {
+      localStorage.setItem(FORM_MODE_KEY, formMode);
+    } catch (_) {}
+    applyFormMode();
+    window.dispatchEvent(new CustomEvent("cv:layout-changed", { detail: { reason: "form-mode" } }));
+  }
+
+  function setupFormModes() {
+    $$(".form-mode-btn[data-form-mode]").forEach((button) => {
+      button.addEventListener("click", () => setFormMode(button.dataset.formMode));
+    });
+    const prev = $("#focus-section-prev");
+    const next = $("#focus-section-next");
+    if (prev) prev.addEventListener("click", () => stepFormSection(-1));
+    if (next) next.addEventListener("click", () => stepFormSection(1));
+    window.addEventListener("cv:form-rebuilt", () => requestAnimationFrame(applyFormMode));
+    applyFormMode();
+  }
+
   // Fire-and-forget activation analytics. The server records it ONLY when
   // POSTHOG_KEY is configured (no-op otherwise); this never throws and never
   // blocks the UI. The server also captures first_export on the build route —
@@ -769,7 +1034,7 @@
     return { total: sections.length, collapsed };
   }
   function setAllSectionsCollapsed(collapsed) {
-    if (viewMode !== "form") return;
+    if (viewMode !== "form" || formMode !== "overview") return;
     const sections = collapsibleSections();
     const state = {};
     if (collapsed) {
@@ -784,7 +1049,7 @@
     const btn = $("#collapse-all-btn");
     if (!btn) return;
     const summary = collapsedSummary();
-    const active = viewMode === "form" && summary.total > 0;
+    const active = viewMode === "form" && formMode === "overview" && summary.total > 0;
     btn.hidden = !active;
     btn.disabled = !active;
     if (!active) {
@@ -809,7 +1074,7 @@
     const btn = $("#collapse-all-btn");
     if (btn) {
       btn.addEventListener("click", () => {
-        if (viewMode !== "form") return;
+        if (viewMode !== "form" || formMode !== "overview") return;
         setAllSectionsCollapsed(!allSectionsCollapsed());
       });
     }
@@ -828,11 +1093,17 @@
     // MutationObserver path: any change inside #form-host re-applies.
     const host = $("#form-host");
     if (host && typeof MutationObserver !== "undefined") {
-      const obs = new MutationObserver(() => applyCollapsedState());
+      const obs = new MutationObserver(() => {
+        applyCollapsedState();
+        applyFormMode();
+      });
       obs.observe(host, { childList: true, subtree: false });
     }
     // Initial pass after the form has mounted.
-    setTimeout(applyCollapsedState, 200);
+    setTimeout(() => {
+      applyCollapsedState();
+      applyFormMode();
+    }, 200);
   }
 
   function setupTour() {
@@ -1001,6 +1272,10 @@
       const value = (accentValue.textContent || "#111111").trim().toUpperCase();
       accentTrigger.setAttribute("aria-label", tr("app.accent_picker_aria", "Choose accent colour {value}", { value }));
     }
+    updateFormModeCopy();
+    updateFocusSectionNav();
+    updateViewHint();
+    if (editor) renderOutline();
     updateCollapseAllButton();
     const logout = $("#logout-btn");
     if (logout) logout.setAttribute("aria-label", t("app.sign_out") !== "app.sign_out" ? t("app.sign_out") : "Sign out");
@@ -1045,8 +1320,14 @@
       requestAnimationFrame(() => {
         const first = $('input[data-required="true"][data-empty="true"], textarea[data-required="true"][data-empty="true"]');
         if (first) {
-          first.scrollIntoView({ behavior: "smooth", block: "center" });
-          first.focus({ preventScroll: true });
+          const section = first.closest(".form-section[data-section-key]");
+          if (formMode === "focus" && section) {
+            activateFormSection(section.dataset.sectionKey, { scrollPreview: false });
+          }
+          requestAnimationFrame(() => {
+            first.scrollIntoView({ behavior: "smooth", block: "center" });
+            first.focus({ preventScroll: true });
+          });
         }
       });
     });
@@ -1161,8 +1442,14 @@
 
   function updateTailorLinks() {
     const params = new URLSearchParams();
-    if (activeCvId) params.set("id", activeCvId);
-    if (activeJob && activeJob.id) params.set("job_id", activeJob.id);
+    const contextJobId = (activeJob && activeJob.id) || applicationContextJobId;
+    const sourceCvId = applicationContextSourceCvId || activeCvId;
+    if (activeCvId) {
+      params.set("id", activeCvId);
+      params.set("cv_id", activeCvId);
+    }
+    if (contextJobId) params.set("job_id", contextJobId);
+    if (sourceCvId) params.set("source_cv_id", sourceCvId);
     const href = `/tailor${params.toString() ? `?${params.toString()}` : ""}`;
     ["#tailor-btn", "#ats-popover .ats-detail-foot a[href^='/tailor']"].forEach((selector) => {
       const link = $(selector);
@@ -1790,6 +2077,8 @@
   //       documents in authenticated mode
   //    2. cvModel (browser memory) — what the form & YAML view both edit
   //    3. CodeMirror buffer — only authoritative while in YAML view
+  //  Edits save as YAML in the current document store; the browser never
+  //  claims that it writes directly to a repository file on disk.
   //
   //  Sync rules:
   //    • form change   → mutate cvModel → schedule save → save serialises
@@ -1917,12 +2206,23 @@
           localStorage.setItem(activeKey, JSON.stringify(Object.assign({}, current, pending)));
           localStorage.removeItem(defaultKey);
         }
+        const defaultSectionKey = `${ACTIVE_SECTION_KEY}::default`;
+        const activeSectionKey = `${ACTIVE_SECTION_KEY}::${activeCvId}`;
+        const defaultSection = localStorage.getItem(defaultSectionKey);
+        if (defaultSection) {
+          if (!localStorage.getItem(activeSectionKey)) {
+            localStorage.setItem(activeSectionKey, defaultSection);
+          }
+          localStorage.removeItem(defaultSectionKey);
+        }
       } catch (_) {}
       localStorage.setItem(CV_ID_KEY, activeCvId);
     } else localStorage.removeItem(CV_ID_KEY);
+    activeFormSection = loadActiveFormSection();
     const label = $("#cv-switcher-label");
     syncCvSwitcherLabel(label, activeCvName);
     applyCollapsedState();
+    applyFormMode();
     window.dispatchEvent(new CustomEvent("cv:active-changed", { detail: { id: activeCvId, name: activeCvName } }));
   }
 
@@ -2504,7 +2804,7 @@
       if (outlineHoverKey !== slug) return;
       if (Date.now() < outlineHoverSuppressedUntil) return;
       if (viewMode !== "form") return;
-      scrollFormSectionToKey(slug, "auto");
+      if (formMode === "overview") scrollFormSectionToKey(slug, "auto");
       pendingHighlightKey = slug;
       ensurePreviewHighlightStyles();
       setPreviewHighlight(slug, true);
@@ -2640,19 +2940,22 @@
 
   /** Mark ``key`` as the scroll-active form section + sync the outline. */
   function highlightActiveFormSection(key) {
+    const resolvedKey = viewMode === "form" && formMode === "focus"
+      ? activeFormSection
+      : key;
     $$(".form-section[data-section-key]").forEach((sec) => {
       // CSS matches [data-scroll-active="true"]; set the literal value
       // (toggleAttribute's force flag would set "" and never match).
-      if (sec.dataset.sectionKey === key) {
+      if (sec.dataset.sectionKey === resolvedKey) {
         sec.setAttribute("data-scroll-active", "true");
       } else {
         sec.removeAttribute("data-scroll-active");
       }
     });
     // Drive the outline active state from the same signal.
-    if (key) {
+    if (resolvedKey) {
       $$(".outline-item").forEach((a) => {
-        a.classList.toggle("active", a.dataset.slug === key);
+        a.classList.toggle("active", a.dataset.slug === resolvedKey);
       });
     }
   }
@@ -3932,9 +4235,14 @@
           try {
             const res = await fetch(`/api/cover-letter/${encodeURIComponent(doc.id)}`, { method: "DELETE" });
             const data = await res.json().catch(() => ({}));
-            if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+            const committed = res.ok || (res.status === 503 && data.document_deleted === true);
+            if (!committed) throw new Error(data.error || `HTTP ${res.status}`);
             await refreshList();
-            showBuildToast("Deleted", "The cover letter was removed.", "success");
+            showBuildToast(
+              "Deleted",
+              res.ok ? "The cover letter was removed." : "The cover letter was removed; PDF cleanup is pending.",
+              res.ok ? "success" : "neutral",
+            );
           } catch (err) {
             showBuildToast("Couldn't delete", String(err.message || err), "danger");
           }
@@ -4392,7 +4700,8 @@
       try {
         const res = await fetch(`/api/cv/${encodeURIComponent(id)}`, { method: "DELETE" });
         const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        const committed = res.ok || (res.status === 503 && data.document_deleted === true);
+        if (!committed) throw new Error(data.error || `HTTP ${res.status}`);
         // If we deleted the active CV, fall back to the most-recent one. If the
         // user deleted the last CV, the server returns an empty state instead
         // of silently recreating the first-run template.
@@ -4402,7 +4711,11 @@
           await loadCv();
         }
         await refreshList();
-        showBuildToast("Deleted", "The CV was removed.", "success");
+        showBuildToast(
+          "Deleted",
+          res.ok ? "The CV was removed." : "The CV was removed; PDF cleanup is pending.",
+          res.ok ? "success" : "neutral",
+        );
       } catch (err) {
         showBuildToast("Couldn't delete", String(err.message || err), "danger");
       }
@@ -5745,8 +6058,9 @@
     // signal rather than a contents listing.
     const items = [];
     for (const [yamlKey, renderSlug, schemaLabel] of sectionOrder) {
-      const label = schemaLabel || SECTION_LABELS[yamlKey] ||
+      const fallbackLabel = schemaLabel || SECTION_LABELS[yamlKey] ||
         yamlKey.charAt(0).toUpperCase() + yamlKey.slice(1);
+      const label = localizedSectionLabel(renderSlug || yamlKey, fallbackLabel);
       items.push({
         key: yamlKey,
         label,
@@ -5783,7 +6097,13 @@
         e.preventDefault();
         suppressOutlineHover();
         if (viewMode === "form" && formApi) {
-          formApi.scrollTo(it.renderSlug, { behavior: "smooth", block: "start" });
+          if (formMode === "focus") {
+            activateFormSection(it.renderSlug, { scrollPreview: false });
+          } else {
+            activeFormSection = it.renderSlug;
+            saveActiveFormSection(activeFormSection);
+            formApi.scrollTo(it.renderSlug, { behavior: "smooth", block: "start" });
+          }
         } else {
           editor.setCursor({ line: it.line, ch: 0 });
           editor.scrollIntoView({ line: it.line, ch: 0 }, 80);
@@ -5804,6 +6124,12 @@
 
   function updateOutlineActive() {
     if (!outlineItems.length || !editor) return;
+    if (viewMode === "form" && formMode === "focus") {
+      $$(".outline-item").forEach((el) => {
+        el.classList.toggle("active", el.dataset.slug === activeFormSection);
+      });
+      return;
+    }
     const cur = editor.getCursor().line;
     let activeIdx = -1;
     outlineItems.forEach((it, i) => {
@@ -6437,13 +6763,8 @@
       t.classList.toggle("is-active", active);
       t.setAttribute("aria-selected", active ? "true" : "false");
     });
-    const hint = $("#view-tabs-hint");
-    if (hint) {
-      hint.textContent =
-        viewMode === "form"
-          ? "Edits save as YAML in the current document. Switch to YAML for raw access."
-          : "Raw YAML — full power. Switch to Form for guided editing.";
-    }
+    applyFormMode();
+    updateViewHint();
     // Lint toggle is only meaningful in YAML view.
     const lintBtn = $("#lint-toggle");
     if (lintBtn) {
@@ -6573,7 +6894,7 @@
       label: "Collapse all sections",
       icon: "chevrons-up-down",
       run: () => setAllSectionsCollapsed(true),
-      available: () => viewMode === "form" && collapsibleSections().length > 0 && !allSectionsCollapsed(),
+      available: () => viewMode === "form" && collapsibleSections().length > 0 && !allSectionsCollapsed() && formMode === "overview",
     });
     P.register({
       id: "act-expand-all",
@@ -6582,7 +6903,7 @@
       label: "Expand all sections",
       icon: "chevrons-up-down",
       run: () => setAllSectionsCollapsed(false),
-      available: () => viewMode === "form" && collapsedSummary().collapsed > 0,
+      available: () => viewMode === "form" && collapsedSummary().collapsed > 0 && formMode === "overview",
     });
   }
 
@@ -6645,6 +6966,7 @@
     setupTheme();
     setupEditor();
     setupViews();
+    setupFormModes();
     setupResizer();
     setupSidebarToggle();
     setupTooltips();

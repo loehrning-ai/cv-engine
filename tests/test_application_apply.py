@@ -43,9 +43,14 @@ def _seed_application(fake_supabase, *, source_url: str = "https://jobs.example.
     cover_letter_id = _id()
     packet_id = _id()
     jd_text = "Title: Senior Data Engineer\nCompany: Acme GmbH\nBuild data systems."
-    source_yaml = "name: Tim Loehr\nexperience:\n  - role: Data Engineer\n"
+    source_name = "Tim Loehr"
+    source_yaml = f"name: {source_name}\nexperience:\n  - role: Data Engineer\n"
     tailored_yaml = "name: Tim Loehr\nexperience:\n  - role: Senior Data Engineer\n"
-    letter_yaml = "company: Acme GmbH\nrole: Senior Data Engineer\n"
+    letter_yaml = (
+        "company: Acme GmbH\n"
+        "role: Senior Data Engineer\n"
+        f"source_cv_id: {source_cv_id}\n"
+    )
     fake_supabase.tables.setdefault("saved_jobs", []).append(
         {
             "id": job_id,
@@ -126,14 +131,21 @@ def _seed_application(fake_supabase, *, source_url: str = "https://jobs.example.
             "updated_at": 13,
         }
     )
+    import cover_letter_service as cl_service
+    import pdf_store
+
+    tailored_pdf_hash = pdf_store.persisted_cv_content_hash(tailored_yaml)
+    letter_blob = cl_service.normalized_blob_for_row(docs[-1])
+    letter_cache_key_text = cl_service.serialize_blob(letter_blob) + "\x00" + source_name
+    letter_pdf_hash = pdf_store.cover_letter_content_hash(letter_cache_key_text)
     artifacts = fake_supabase.tables.setdefault("pdf_artifacts", [])
     artifacts.append(
         {
             "id": _id(),
             "owner_id": fake_supabase.owner_id,
             "document_id": tailored_cv_id,
-            "r2_key": f"{fake_supabase.owner_id}/{tailored_cv_id}/tailored.pdf",
-            "content_hash": _hash(tailored_yaml),
+            "r2_key": f"{fake_supabase.owner_id}/{tailored_cv_id}/{tailored_pdf_hash}.pdf",
+            "content_hash": tailored_pdf_hash,
             "stale": False,
             "page_count": 1,
             "updated_at": 14,
@@ -144,8 +156,8 @@ def _seed_application(fake_supabase, *, source_url: str = "https://jobs.example.
             "id": _id(),
             "owner_id": fake_supabase.owner_id,
             "document_id": cover_letter_id,
-            "r2_key": f"{fake_supabase.owner_id}/{cover_letter_id}/cover.pdf",
-            "content_hash": _hash(letter_yaml),
+            "r2_key": f"{fake_supabase.owner_id}/{cover_letter_id}/{letter_pdf_hash}.pdf",
+            "content_hash": letter_pdf_hash,
             "stale": False,
             "page_count": 1,
             "updated_at": 15,
@@ -503,11 +515,144 @@ class TestApplyReadiness:
         assert body["ready"] is False
         assert "cover_letter_pdf_missing" in {b["code"] for b in body["blockers"]}
 
+    def test_readiness_degrades_when_stored_cover_letter_fails_envelope_validation(
+        self, server_module, client, fake_supabase
+    ):
+        """A legacy blob must produce a blocker, never a 400.
+
+        Stored YAML is parsed leniently on read, but the PDF cache key re-runs
+        the strict envelope validation added with the persisted envelope. A
+        letter saved before those caps existed can carry an invisible format
+        character (U+200B here), which makes `serialize_blob` raise
+        CoverLetterError. If that escapes, GET .../apply/readiness returns 400
+        and the whole Application Studio panel dies for that job.
+        """
+        seeded = _seed_application(fake_supabase)
+        letter = next(
+            row
+            for row in fake_supabase.tables["documents"]
+            if row["id"] == seeded["cover_letter_id"]
+        )
+        letter["yaml_blob"] = "body: |\n  Dear team,​ hello.\n"
+
+        res = client.get(f"/api/jobs/{seeded['job_id']}/apply/readiness")
+
+        assert res.status_code == 200, res.get_json()
+        body = res.get_json()
+        assert body["ready"] is False
+        assert "cover_letter_pdf_missing" in {b["code"] for b in body["blockers"]}
+
+    def test_readiness_accepts_multi_page_cover_letter_artifact(
+        self, server_module, client, fake_supabase
+    ):
+        seeded = _seed_application(fake_supabase)
+        artifact = next(
+            row for row in fake_supabase.tables["pdf_artifacts"]
+            if row["document_id"] == seeded["cover_letter_id"]
+        )
+        artifact["page_count"] = 2
+
+        res = client.get(f"/api/jobs/{seeded['job_id']}/apply/readiness")
+
+        assert res.status_code == 200
+        body = res.get_json()
+        assert body["ready"] is True
+        assert "cover_letter_pdf_missing" not in {b["code"] for b in body["blockers"]}
+
+    def test_readiness_rejects_cross_document_pdf_object_key(
+        self, server_module, client, fake_supabase
+    ):
+        seeded = _seed_application(fake_supabase)
+        artifact = next(
+            row for row in fake_supabase.tables["pdf_artifacts"]
+            if row["document_id"] == seeded["tailored_cv_id"]
+        )
+        artifact["r2_key"] = (
+            f"{fake_supabase.owner_id}/{seeded['source_cv_id']}/"
+            f"{artifact['content_hash']}.pdf"
+        )
+
+        res = client.get(f"/api/jobs/{seeded['job_id']}/apply/readiness")
+
+        assert res.status_code == 200
+        body = res.get_json()
+        assert body["ready"] is False
+        assert "tailored_cv_pdf_missing" in {b["code"] for b in body["blockers"]}
+
+    def test_readiness_rejects_cv_appearance_drift_without_yaml_drift(
+        self, server_module, client, fake_supabase
+    ):
+        seeded = _seed_application(fake_supabase)
+        tailored = next(
+            row for row in fake_supabase.tables["documents"]
+            if row["id"] == seeded["tailored_cv_id"]
+        )
+        tailored["accent"] = "#2563eb"
+
+        res = client.get(f"/api/jobs/{seeded['job_id']}/apply/readiness")
+
+        assert res.status_code == 200
+        body = res.get_json()
+        codes = {b["code"] for b in body["blockers"]}
+        assert body["ready"] is False
+        assert "tailored_cv_pdf_missing" in codes
+        assert "tailored_cv_stale" not in codes
+
+    def test_readiness_rejects_cover_pdf_after_sender_render_input_drift(
+        self, server_module, client, fake_supabase
+    ):
+        seeded = _seed_application(fake_supabase)
+        source = next(
+            row for row in fake_supabase.tables["documents"]
+            if row["id"] == seeded["source_cv_id"]
+        )
+        source["yaml_blob"] = source["yaml_blob"].replace("Tim Loehr", "Tina Loehr")
+        fake_supabase.tables["application_packets"][0]["source_cv_hash"] = _hash(
+            source["yaml_blob"]
+        )
+
+        res = client.get(f"/api/jobs/{seeded['job_id']}/apply/readiness")
+
+        assert res.status_code == 200
+        body = res.get_json()
+        codes = {b["code"] for b in body["blockers"]}
+        assert body["ready"] is False
+        assert "cover_letter_pdf_missing" in codes
+        assert "source_cv_stale" not in codes
+
+    def test_readiness_rejects_multiple_fresh_artifacts_for_one_document(
+        self, server_module, client, fake_supabase
+    ):
+        seeded = _seed_application(fake_supabase)
+        conflicting_hash = "f" * 64
+        fake_supabase.tables["pdf_artifacts"].append(
+            {
+                "id": _id(),
+                "owner_id": fake_supabase.owner_id,
+                "document_id": seeded["tailored_cv_id"],
+                "r2_key": (
+                    f"{fake_supabase.owner_id}/{seeded['tailored_cv_id']}/"
+                    f"{conflicting_hash}.pdf"
+                ),
+                "content_hash": conflicting_hash,
+                "stale": False,
+                "page_count": 1,
+            }
+        )
+
+        res = client.get(f"/api/jobs/{seeded['job_id']}/apply/readiness")
+
+        assert res.status_code == 200
+        body = res.get_json()
+        assert body["ready"] is False
+        assert "tailored_cv_pdf_missing" in {b["code"] for b in body["blockers"]}
+
     @pytest.mark.parametrize(
         ("field", "value"),
         [
             ("r2_key", ""),
             ("content_hash", ""),
+            ("content_hash", "f" * 64),
             ("page_count", 2),
         ],
     )
@@ -648,6 +793,12 @@ class TestApplyActions:
         assert body["target"]["dry_run_allowed"] is False
         assert body["attempt"]["status"] == "manual_open_ready"
 
+        history = client.get(f"/api/jobs/{seeded['job_id']}/apply/readiness").get_json()["attempts"]
+        assert len(history) == 1
+        assert history[0]["id"] == body["attempt"]["id"]
+        assert history[0]["status"] == "manual_open_ready"
+        assert history[0]["submitted"] is False
+
     def test_manual_open_persists_explicit_packet_readiness_confirmations(
         self, server_module, client, fake_supabase, monkeypatch
     ):
@@ -670,6 +821,102 @@ class TestApplyActions:
         assert packet["legal_answers_confirmed"] is True
         assert packet["visa_answers_confirmed"] is True
         assert fake_supabase.tables["application_apply_attempts"][0]["readiness"]["ready"] is True
+
+    def test_manual_open_finalizer_rejects_target_race_without_success_evidence(
+        self, server_module, client, fake_supabase, monkeypatch
+    ):
+        monkeypatch.setenv("ONEPAGER_EXTERNAL_APPLY_ENABLED", "1")
+        monkeypatch.setenv("ONEPAGER_EXTERNAL_APPLY_KILL_SWITCH", "0")
+        seeded = _seed_application(fake_supabase)
+        original = fake_supabase._finalize_application_apply_action
+
+        def race_target(params):
+            job = fake_supabase.tables["saved_jobs"][0]
+            job["source_url"] = "https://changed.example/apply"
+            # Preserve the revision deliberately: the finalizer must compare
+            # the target inputs themselves, not trust a caller-writable clock.
+            return original(params)
+
+        monkeypatch.setattr(
+            fake_supabase,
+            "_finalize_application_apply_action",
+            race_target,
+        )
+
+        res = client.post(
+            f"/api/jobs/{seeded['job_id']}/apply/open",
+            json=_confirmations(),
+        )
+
+        assert res.status_code == 409
+        body = res.get_json()
+        assert body["code"] == "apply_state_changed"
+        assert body["reason_code"] == "target_changed"
+        assert not any(
+            row.get("status") == "manual_open_ready"
+            for row in fake_supabase.tables["application_apply_attempts"]
+        )
+
+    def test_manual_open_finalizer_rejects_document_race_without_success_evidence(
+        self, server_module, client, fake_supabase, monkeypatch
+    ):
+        monkeypatch.setenv("ONEPAGER_EXTERNAL_APPLY_ENABLED", "1")
+        monkeypatch.setenv("ONEPAGER_EXTERNAL_APPLY_KILL_SWITCH", "0")
+        seeded = _seed_application(fake_supabase)
+        original = fake_supabase._finalize_application_apply_action
+
+        def race_document(params):
+            tailored = next(
+                row for row in fake_supabase.tables["documents"]
+                if row["id"] == seeded["tailored_cv_id"]
+            )
+            tailored["accent"] = "#2563eb"
+            return original(params)
+
+        monkeypatch.setattr(
+            fake_supabase,
+            "_finalize_application_apply_action",
+            race_document,
+        )
+
+        res = client.post(
+            f"/api/jobs/{seeded['job_id']}/apply/open",
+            json=_confirmations(),
+        )
+
+        assert res.status_code == 409
+        body = res.get_json()
+        assert body["code"] == "apply_state_changed"
+        assert body["reason_code"] == "document_changed"
+        assert not any(
+            row.get("status") == "manual_open_ready"
+            for row in fake_supabase.tables["application_apply_attempts"]
+        )
+
+    def test_manual_open_finalizer_transport_failure_is_fail_closed(
+        self, server_module, client, fake_supabase, monkeypatch
+    ):
+        monkeypatch.setenv("ONEPAGER_EXTERNAL_APPLY_ENABLED", "1")
+        monkeypatch.setenv("ONEPAGER_EXTERNAL_APPLY_KILL_SWITCH", "0")
+        seeded = _seed_application(fake_supabase)
+
+        def fail_finalizer(_params):
+            raise TimeoutError("database lock timeout")
+
+        monkeypatch.setattr(
+            fake_supabase,
+            "_finalize_application_apply_action",
+            fail_finalizer,
+        )
+
+        res = client.post(
+            f"/api/jobs/{seeded['job_id']}/apply/open",
+            json=_confirmations(),
+        )
+
+        assert res.status_code == 500
+        assert res.get_json()["code"] == "apply_finalize_failed"
+        assert fake_supabase.tables.get("application_apply_attempts", []) == []
 
     def test_dry_run_rejects_unknown_hosts(self, server_module, client, fake_supabase, monkeypatch):
         monkeypatch.setenv("ONEPAGER_EXTERNAL_APPLY_ENABLED", "1")
@@ -775,13 +1022,16 @@ def test_apply_service_does_not_import_browser_or_network_automation():
     assert "httpx" not in source
 
 
-def test_apply_attempt_audit_is_append_only_rpc_and_no_submit():
+def test_apply_attempt_audit_is_append_only_server_write_and_no_submit():
     sql = Path("supabase/migrations/0013_application_apply_attempts.sql").read_text(encoding="utf-8")
     lowered = sql.lower()
     hardening = Path(
         "supabase/migrations/0023_security_contract_hardening.sql"
     ).read_text(encoding="utf-8")
     hardening_lower = hardening.lower()
+    latest = Path(
+        "supabase/migrations/20260801145140_preserve_application_history_deletes.sql"
+    ).read_text(encoding="utf-8").lower()
 
     assert "create table if not exists public.application_apply_attempts" in sql
     assert "alter table public.application_apply_attempts enable row level security" in sql
@@ -812,6 +1062,58 @@ def test_apply_attempt_audit_is_append_only_rpc_and_no_submit():
     )
     assert "submitted,\n    automation_performed" in hardening_lower
     assert "false,\n    false" in hardening_lower
+    assert (
+        "revoke execute on function public.record_application_apply_attempt("
+        in latest
+    )
+    assert "from public, anon, authenticated" in latest
+    apply_service = Path("tools/editor/apply_service.py").read_text(encoding="utf-8")
+    assert "_server_sb()" in apply_service
+    assert ".table(ATTEMPT_TABLE)" in apply_service
+    assert '"record_application_apply_attempt"' not in apply_service
+
+
+def test_successful_apply_evidence_uses_locked_atomic_finalizer():
+    migration = Path(
+        "supabase/migrations/20260801145140_preserve_application_history_deletes.sql"
+    ).read_text(encoding="utf-8").lower()
+    function = migration.split(
+        "create or replace function public.finalize_application_apply_action(", 1
+    )[1].split("revoke execute on function public.finalize_application_apply_action(", 1)[0]
+    apply_service = Path("tools/editor/apply_service.py").read_text(encoding="utf-8")
+
+    assert "security definer" in function
+    assert "set search_path = ''" in function
+    assert "set lock_timeout = '2s'" in function
+    for relation in (
+        "public.profiles",
+        "public.saved_jobs",
+        "public.application_packets",
+        "public.documents",
+        "public.pdf_artifacts",
+    ):
+        assert relation in function
+    assert function.count("for share") >= 8
+    assert "job_row.source_url" in function
+    assert "job_row.jd_text" in function
+    assert "packet_row.updated_at" in function
+    assert "source_row.updated_at" in function
+    assert "tailored_row.updated_at" in function
+    assert "letter_row.updated_at" in function
+    assert "tailored_artifact.content_hash" in function
+    assert "letter_artifact.content_hash" in function
+    assert "insert into public.application_apply_attempts" in function
+    assert "statement_timestamp()" in function
+    assert "submitted, automation_performed" in function
+    assert "false, false" in function
+    assert (
+        "from public, anon, authenticated;\ngrant execute on function "
+        "public.finalize_application_apply_action("
+        in migration
+    )
+    assert ") to service_role;" in migration
+    assert '"finalize_application_apply_action"' in apply_service
+    assert "attempt, readiness = _record_successful_attempt(" in apply_service
 
 
 def test_application_packet_migration_tracks_lineage_and_readiness():

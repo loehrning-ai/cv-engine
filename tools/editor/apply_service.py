@@ -17,7 +17,10 @@ import uuid
 from typing import Any
 from urllib.parse import unquote, urlparse, urlunparse
 
+import yaml
+
 import auth as auth_mod
+import cover_letter_service as cl_service
 import jobs_service as jobs_svc
 import local_demo_store
 import pdf_store
@@ -195,6 +198,7 @@ def application_readiness(job_id: str, packet_id: str | None = None) -> dict[str
         "job_id": job.get("id") or job_id,
         "ready": ready,
         "blockers": blockers,
+        "attempts": application_attempt_history(job_id),
         "target": target,
         "packet": _public_packet(packet),
         "config": {
@@ -210,6 +214,31 @@ def application_readiness(job_id: str, packet_id: str | None = None) -> dict[str
             "submit": False,
         },
     }
+
+
+def application_attempt_history(job_id: str, *, limit: int = 20) -> list[dict[str, Any]]:
+    """Return the caller's append-only apply evidence for one job.
+
+    Attempts are deliberately separate from the mutable saved-job status. A
+    manual-open or fixture dry-run row proves only that exact action; neither
+    action claims that an external submission happened.
+    """
+    bounded_limit = max(1, min(int(limit), 100))
+    rows = (
+        _user_sb()
+        .table(ATTEMPT_TABLE)
+        .select(
+            "id, job_id, packet_id, action, status, reason_code, target_host, "
+            "target_classification, submitted, automation_performed, created_at"
+        )
+        .eq("job_id", job_id)
+        .order("created_at", desc=True)
+        .limit(bounded_limit)
+        .execute()
+        .data
+        or []
+    )
+    return [_public_attempt(row) for row in rows]
 
 
 def run_apply_action(
@@ -378,7 +407,7 @@ def run_apply_action(
                 },
             )
         fields = _fixture_field_report(payload.get("fixture_fields"))
-        attempt = _record_attempt(
+        attempt, readiness = _record_successful_attempt(
             job_id=job_id,
             packet_id=packet.get("id"),
             action=action,
@@ -390,6 +419,8 @@ def run_apply_action(
             now_iso=now,
             metadata={"field_count": len(fields), "field_names": [f["name"] for f in fields]},
         )
+        target = readiness["target"]
+        packet = readiness.get("packet") or packet
         return {
             "status": "dry_run_completed",
             "submitted": False,
@@ -400,7 +431,7 @@ def run_apply_action(
             "attempt": attempt,
         }
 
-    attempt = _record_attempt(
+    attempt, readiness = _record_successful_attempt(
         job_id=job_id,
         packet_id=packet.get("id"),
         action=action,
@@ -411,6 +442,8 @@ def run_apply_action(
         confirmations=confirmations,
         now_iso=now,
     )
+    target = readiness["target"]
+    packet = readiness.get("packet") or packet
     return {
         "status": "manual_open_ready",
         "submitted": False,
@@ -476,39 +509,381 @@ def _record_attempt(
         return _public_attempt(inserted[0] if inserted else row)
 
     try:
-        data = (
-            auth_mod.user_supabase()
-            .rpc(
-                "record_application_apply_attempt",
-                {
-                    "p_job_id": job_id,
-                    "p_packet_id": packet_id,
-                    "p_action": action,
-                    "p_status": status,
-                    "p_reason_code": reason_code,
-                    "p_target_url": row["target_url"],
-                    "p_target_host": row["target_host"],
-                    "p_target_classification": row["target_classification"],
-                    "p_readiness": row["readiness"],
-                    "p_confirmations": row["confirmations"],
-                    "p_metadata": row["metadata"],
-                },
-            )
+        inserted = (
+            _server_sb()
+            .table(ATTEMPT_TABLE)
+            .insert({**row, "owner_id": _owner_id()})
             .execute()
             .data
+            or []
         )
-        if isinstance(data, dict):
-            inserted = [data]
-        elif isinstance(data, list):
-            inserted = data
-        else:
-            inserted = []
     except Exception as exc:  # noqa: BLE001 - fail closed if the audit table cannot record
         raise ApplyError(
             500,
             {"error": "Failed to record application attempt.", "code": "attempt_log_failed"},
         ) from exc
-    return _public_attempt(inserted[0] if inserted else row)
+    if not inserted:
+        raise ApplyError(
+            500,
+            {"error": "Failed to record application attempt.", "code": "attempt_log_failed"},
+        )
+    return _public_attempt(inserted[0])
+
+
+class _ApplyStateChanged(Exception):
+    """The final database-bound apply snapshot no longer matches readiness."""
+
+    def __init__(self, code: str = "apply_state_changed"):
+        super().__init__(code)
+        self.code = code
+
+
+def _record_successful_attempt(
+    *,
+    job_id: str,
+    packet_id: str | None,
+    action: str,
+    status: str,
+    reason_code: str,
+    target: dict[str, Any],
+    readiness: dict[str, Any],
+    confirmations: dict[str, bool],
+    now_iso: str,
+    metadata: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Atomically bind a successful action to the final current DB snapshot."""
+    if local_demo_store.active():
+        return (
+            _record_attempt(
+                job_id=job_id,
+                packet_id=packet_id,
+                action=action,
+                status=status,
+                reason_code=reason_code,
+                target=target,
+                readiness=readiness,
+                confirmations=confirmations,
+                now_iso=now_iso,
+                metadata=metadata,
+            ),
+            readiness,
+        )
+
+    refreshed: dict[str, Any] | None = None
+    try:
+        if not packet_id or not _is_uuid(packet_id):
+            raise _ApplyStateChanged("packet_unavailable")
+        try:
+            refreshed = application_readiness(job_id, packet_id=packet_id)
+        except jobs_svc.JobError as exc:
+            if exc.status >= 500:
+                raise ApplyError(
+                    500,
+                    {
+                        "error": "Failed to finalize application evidence.",
+                        "code": "apply_finalize_failed",
+                    },
+                ) from exc
+            raise _ApplyStateChanged(
+                str(exc.payload.get("code") or "apply_state_changed")
+            ) from exc
+        current_config = external_apply_config()
+        current_target = refreshed.get("target") or {}
+        current_packet = refreshed.get("packet") or {}
+        if not current_config["available"]:
+            raise _ApplyStateChanged(
+                "external_apply_disabled"
+                if not current_config["enabled"]
+                else "external_apply_kill_switch"
+            )
+        if not refreshed.get("ready"):
+            blockers = refreshed.get("blockers") or []
+            code = blockers[0].get("code") if blockers and isinstance(blockers[0], dict) else None
+            raise _ApplyStateChanged(str(code or "apply_state_changed"))
+        if current_packet.get("id") != packet_id:
+            raise _ApplyStateChanged("packet_unavailable")
+        if any(
+            current_target.get(key) != target.get(key)
+            for key in ("url", "host", "classification", "reason_code")
+        ):
+            raise _ApplyStateChanged("target_changed")
+        if action == "manual_open" and current_target.get("open_allowed") is not True:
+            raise _ApplyStateChanged("target_changed")
+        if action == "dry_run" and current_target.get("dry_run_allowed") is not True:
+            raise _ApplyStateChanged("target_changed")
+
+        try:
+            expected = _final_apply_state(
+                job_id=job_id,
+                packet_id=packet_id,
+                target=current_target,
+            )
+        except (_ApplyStateChanged, ApplyError):
+            raise
+        except Exception as exc:  # noqa: BLE001 - snapshot reads must fail closed
+            raise ApplyError(
+                500,
+                {
+                    "error": "Failed to finalize application evidence.",
+                    "code": "apply_finalize_failed",
+                },
+            ) from exc
+        readiness_evidence = {
+            "ready": True,
+            "blockers": [],
+        }
+        try:
+            response = _server_sb().rpc(
+                "finalize_application_apply_action",
+                {
+                    "p_owner_id": _owner_id(),
+                    "p_job_id": job_id,
+                    "p_packet_id": packet_id,
+                    "p_action": action,
+                    "p_status": status,
+                    "p_reason_code": reason_code,
+                    "p_target_url": current_target.get("url") or "",
+                    "p_target_host": current_target.get("host") or "",
+                    "p_target_classification": current_target.get("classification") or "invalid",
+                    "p_expected": expected,
+                    "p_readiness": readiness_evidence,
+                    "p_confirmations": confirmations,
+                    "p_metadata": metadata or {},
+                },
+            ).execute().data
+        except ApplyError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - final evidence must fail closed
+            raise ApplyError(
+                500,
+                {
+                    "error": "Failed to finalize application evidence.",
+                    "code": "apply_finalize_failed",
+                },
+            ) from exc
+        result = response[0] if isinstance(response, list) and response else response
+        if not isinstance(result, dict):
+            raise ApplyError(
+                500,
+                {
+                    "error": "Application evidence finalization returned invalid evidence.",
+                    "code": "attempt_log_failed",
+                },
+            )
+        if result.get("status") != "recorded":
+            raise _ApplyStateChanged(str(result.get("code") or "apply_state_changed"))
+        inserted = result.get("attempt")
+        if not isinstance(inserted, dict) or any(
+            (
+                inserted.get("job_id") != job_id,
+                inserted.get("packet_id") != packet_id,
+                inserted.get("action") != action,
+                inserted.get("status") != status,
+                inserted.get("target_url") != current_target.get("url"),
+                inserted.get("target_host") != current_target.get("host"),
+                inserted.get("target_classification") != current_target.get("classification"),
+                inserted.get("submitted") is not False,
+                inserted.get("automation_performed") is not False,
+            )
+        ):
+            raise ApplyError(
+                500,
+                {
+                    "error": "Application evidence finalization mismatch.",
+                    "code": "attempt_log_failed",
+                },
+            )
+        return _public_attempt(inserted), refreshed
+    except _ApplyStateChanged as exc:
+        blocked_readiness = refreshed or readiness
+        blocked_target = (
+            blocked_readiness.get("target")
+            if isinstance(blocked_readiness.get("target"), dict)
+            else target
+        )
+        blocked_packet = (
+            blocked_readiness.get("packet")
+            if isinstance(blocked_readiness.get("packet"), dict)
+            else {}
+        )
+        blocked_attempt = None
+        try:
+            blocked_attempt = _record_attempt(
+                job_id=job_id,
+                packet_id=blocked_packet.get("id") or packet_id,
+                action=action,
+                status="blocked",
+                reason_code=exc.code,
+                target=blocked_target,
+                readiness=blocked_readiness,
+                confirmations=confirmations,
+                now_iso=now_iso,
+                metadata=metadata,
+            )
+        except ApplyError:
+            pass
+        payload: dict[str, Any] = {
+            "error": "Application state changed before the action was finalized.",
+            "code": "apply_state_changed",
+            "reason_code": exc.code,
+        }
+        if blocked_attempt is not None:
+            payload["attempt"] = blocked_attempt
+        raise ApplyError(409, payload) from exc
+
+
+def _final_apply_state(
+    *,
+    job_id: str,
+    packet_id: str,
+    target: dict[str, Any],
+) -> dict[str, Any]:
+    """Capture and validate the exact rows the final RPC will lock and compare."""
+    sb = _user_sb()
+    jobs = (
+        sb.table("saved_jobs")
+        .select("id, source_url, source_metadata, jd_text, updated_at")
+        .eq("id", job_id)
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    packets = (
+        sb.table(PACKET_TABLE)
+        .select(
+            "id, job_id, source_cv_id, tailored_cv_id, cover_letter_id, status, "
+            "review_status, archived_at, prompt_version, packet_version, "
+            "source_cv_hash, job_content_hash, tailored_cv_hash, cover_letter_hash, "
+            "profile_answers_complete, legal_answers_confirmed, visa_answers_confirmed, "
+            "cover_letter_review_status, cover_letter_review_confirmed_at, "
+            "cover_letter_review_id, updated_at"
+        )
+        .eq("id", packet_id)
+        .eq("job_id", job_id)
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    if len(jobs) != 1 or len(packets) != 1:
+        raise _ApplyStateChanged("packet_unavailable")
+    job = jobs[0]
+    packet = packets[0]
+    current_target = classify_apply_url(job.get("source_url"))
+    if any(
+        current_target.get(key) != target.get(key)
+        for key in ("url", "host", "classification", "reason_code")
+    ):
+        raise _ApplyStateChanged("target_changed")
+    metadata = job.get("source_metadata") if isinstance(job.get("source_metadata"), dict) else {}
+    if metadata.get("full_jd_status") == "missing" or not str(job.get("jd_text") or "").strip():
+        raise _ApplyStateChanged("full_jd_required")
+    if packet.get("archived_at") or packet.get("status") != "packet_created":
+        raise _ApplyStateChanged("packet_unavailable")
+    if (
+        packet.get("review_status") != "reviewed"
+        or packet.get("prompt_version") != jobs_svc.PACKET_PROMPT_VERSION
+        or int(packet.get("packet_version") or 0) < jobs_svc.PACKET_VERSION
+        or packet.get("profile_answers_complete") is not True
+        or packet.get("legal_answers_confirmed") is not True
+        or packet.get("visa_answers_confirmed") is not True
+        or packet.get("cover_letter_review_status") != "confirmed"
+        or not packet.get("cover_letter_review_confirmed_at")
+        or not packet.get("cover_letter_review_id")
+    ):
+        raise _ApplyStateChanged("packet_unavailable")
+
+    document_ids = [
+        str(packet.get("source_cv_id") or ""),
+        str(packet.get("tailored_cv_id") or ""),
+        str(packet.get("cover_letter_id") or ""),
+    ]
+    if any(not _is_uuid(doc_id) for doc_id in document_ids):
+        raise _ApplyStateChanged("document_changed")
+    documents = (
+        sb.table("documents")
+        .select("id, type, job_id, name, yaml_blob, accent, font, density, updated_at")
+        .in_("id", document_ids)
+        .is_("deleted_at", "null")
+        .execute()
+        .data
+        or []
+    )
+    by_id = {str(row.get("id")): row for row in documents}
+    source = by_id.get(document_ids[0])
+    tailored = by_id.get(document_ids[1])
+    letter = by_id.get(document_ids[2])
+    if (
+        source is None
+        or source.get("type") != "cv"
+        or tailored is None
+        or tailored.get("type") != "cv"
+        or tailored.get("job_id") != job_id
+        or letter is None
+        or letter.get("type") != "cover_letter"
+        or letter.get("job_id") != job_id
+    ):
+        raise _ApplyStateChanged("document_changed")
+
+    job_hash = _content_hash(str(job.get("jd_text") or ""))
+    source_hash = _content_hash(str(source.get("yaml_blob") or ""))
+    tailored_hash = _content_hash(str(tailored.get("yaml_blob") or ""))
+    letter_hash = _content_hash(str(letter.get("yaml_blob") or ""))
+    if (
+        packet.get("job_content_hash") != job_hash
+        or packet.get("source_cv_hash") != source_hash
+        or packet.get("tailored_cv_hash") != tailored_hash
+        or packet.get("cover_letter_hash") != letter_hash
+    ):
+        raise _ApplyStateChanged("document_changed")
+
+    tailored_artifact = _fresh_pdf_artifact_evidence(tailored, require_one_page=True)
+    letter_artifact = _fresh_pdf_artifact_evidence(letter, require_one_page=False)
+    if tailored_artifact is None or letter_artifact is None:
+        raise _ApplyStateChanged("artifact_changed")
+    revisions = (
+        job.get("updated_at"),
+        packet.get("updated_at"),
+        source.get("updated_at"),
+        tailored.get("updated_at"),
+        letter.get("updated_at"),
+    )
+    if any(value is None for value in revisions):
+        raise _ApplyStateChanged("document_changed")
+    return {
+        "job_updated_at": revisions[0],
+        "job_source_url": job.get("source_url") or "",
+        "job_jd_text": job.get("jd_text") or "",
+        "job_content_hash": job_hash,
+        "packet_updated_at": revisions[1],
+        "prompt_version": packet.get("prompt_version"),
+        "packet_version": int(packet.get("packet_version") or 0),
+        "source_cv_id": document_ids[0],
+        "source_cv_updated_at": revisions[2],
+        "source_cv_hash": source_hash,
+        "tailored_cv_id": document_ids[1],
+        "tailored_cv_updated_at": revisions[3],
+        "tailored_cv_hash": tailored_hash,
+        "tailored_cv_accent": tailored.get("accent") or "",
+        "tailored_cv_font": tailored.get("font") or "",
+        "cover_letter_id": document_ids[2],
+        "cover_letter_updated_at": revisions[4],
+        "cover_letter_hash": letter_hash,
+        "target_url": target.get("url") or "",
+        "target_host": target.get("host") or "",
+        "target_classification": target.get("classification") or "invalid",
+        "tailored_artifact_id": tailored_artifact.get("id"),
+        "tailored_artifact_r2_key": tailored_artifact.get("r2_key"),
+        "tailored_artifact_content_hash": tailored_artifact.get("content_hash"),
+        "tailored_artifact_generation_id": tailored_artifact.get("generation_id"),
+        "tailored_artifact_page_count": tailored_artifact.get("page_count"),
+        "letter_artifact_id": letter_artifact.get("id"),
+        "letter_artifact_r2_key": letter_artifact.get("r2_key"),
+        "letter_artifact_content_hash": letter_artifact.get("content_hash"),
+        "letter_artifact_generation_id": letter_artifact.get("generation_id"),
+        "letter_artifact_page_count": letter_artifact.get("page_count"),
+    }
 
 
 def _packet_needs_confirmation_persistence(packet: dict[str, Any], confirmations: dict[str, bool]) -> bool:
@@ -621,14 +996,16 @@ def _packet_blockers(packet: dict[str, Any], detail: dict[str, Any]) -> list[dic
 
     cv_ids = {row.get("id") for row in detail.get("cvs", [])}
     cover_ids = {row.get("id") for row in detail.get("cover_letters", [])}
-    if packet.get("tailored_cv_id") and packet.get("tailored_cv_id") not in cv_ids:
+    tailored_cv_linked = bool(
+        packet.get("tailored_cv_id") and packet.get("tailored_cv_id") in cv_ids
+    )
+    cover_letter_linked = bool(
+        packet.get("cover_letter_id") and packet.get("cover_letter_id") in cover_ids
+    )
+    if packet.get("tailored_cv_id") and not tailored_cv_linked:
         blockers.append(_blocker("tailored_cv_unlinked", "Tailored CV is not linked to this job."))
-    elif packet.get("tailored_cv_id") and not _has_fresh_pdf_artifact(str(packet.get("tailored_cv_id"))):
-        blockers.append(_blocker("tailored_cv_pdf_missing", "Tailored CV PDF must be generated before apply."))
-    if packet.get("cover_letter_id") and packet.get("cover_letter_id") not in cover_ids:
+    if packet.get("cover_letter_id") and not cover_letter_linked:
         blockers.append(_blocker("cover_letter_unlinked", "Cover letter is not linked to this job."))
-    elif packet.get("cover_letter_id") and not _has_fresh_pdf_artifact(str(packet.get("cover_letter_id"))):
-        blockers.append(_blocker("cover_letter_pdf_missing", "Cover-letter PDF must be generated before apply."))
 
     source_cv_id = str(packet.get("source_cv_id") or "")
     if not source_cv_id:
@@ -679,6 +1056,16 @@ def _packet_blockers(packet: dict[str, Any], detail: dict[str, Any]) -> list[dic
             missing_document_message="Cover letter is missing.",
             missing_hash_message="Cover letter lineage hash is missing.",
         )
+    # Artifact blockers follow content-lineage blockers so an edited document
+    # reports the underlying stale revision before the derived PDF consequence.
+    if tailored_cv_linked and not _has_fresh_pdf_artifact(
+        str(packet.get("tailored_cv_id")), require_one_page=True
+    ):
+        blockers.append(_blocker("tailored_cv_pdf_missing", "Tailored CV PDF must be generated before apply."))
+    if cover_letter_linked and not _has_fresh_pdf_artifact(
+        str(packet.get("cover_letter_id")), require_one_page=False
+    ):
+        blockers.append(_blocker("cover_letter_pdf_missing", "Cover-letter PDF must be generated before apply."))
     if not _packet_is_archived(packet) and packet.get("status") != "packet_created":
         blockers.append(_blocker("packet_incomplete", "Application packet is not complete."))
     if packet.get("cover_letter_id"):
@@ -824,33 +1211,123 @@ def _document_yaml_hash(doc_id: str, expected_type: str) -> str | None:
     return _content_hash(rows[0].get("yaml_blob") or "")
 
 
-def _has_fresh_pdf_artifact(doc_id: str) -> bool:
+def _has_fresh_pdf_artifact(doc_id: str, *, require_one_page: bool) -> bool:
     if not _is_uuid(doc_id):
         return False
-    rows = (
+    expected_type = "cv" if require_one_page else "cover_letter"
+    document_rows = (
         _user_sb()
-        .table("pdf_artifacts")
-        .select("id, document_id, r2_key, content_hash, stale, page_count")
-        .eq("document_id", doc_id)
-        .eq("stale", False)
+        .table("documents")
+        .select("id, type, name, yaml_blob, accent, font, density, job_id")
+        .eq("id", doc_id)
+        .is_("deleted_at", "null")
         .limit(1)
         .execute()
         .data
         or []
     )
-    if not rows:
+    if not document_rows or document_rows[0].get("type") != expected_type:
         return False
-    row = rows[0]
-    if not isinstance(row.get("r2_key"), str) or not row["r2_key"].strip():
-        return False
-    if not isinstance(row.get("content_hash"), str) or not row["content_hash"].strip():
-        return False
+    return _fresh_pdf_artifact_evidence(
+        document_rows[0],
+        require_one_page=require_one_page,
+    ) is not None
+
+
+def _fresh_pdf_artifact_evidence(
+    document: dict[str, Any],
+    *,
+    require_one_page: bool,
+) -> dict[str, Any] | None:
+    """Return the sole canonical, live R2 artifact for an exact document."""
+    if local_demo_store.active():
+        # The ephemeral demo never owns authoritative remote artifacts. Do not
+        # query R2 or turn process-local rows into application-readiness proof.
+        return None
+    doc_id = document.get("id")
+    expected_type = "cv" if require_one_page else "cover_letter"
+    if not _is_uuid(doc_id) or document.get("type") != expected_type:
+        return None
     try:
-        if int(row.get("page_count") or 0) != 1:
-            return False
+        if expected_type == "cv":
+            expected_hash = pdf_store.persisted_cv_content_hash(
+                document.get("yaml_blob") or "",
+                document.get("accent") or "",
+                document.get("font") or "",
+            )
+        else:
+            blob = cl_service.normalized_blob_for_row(document)
+            sender_name = str(blob.get("sender_name") or "").strip()
+            if not sender_name:
+                sender_name = _cover_letter_sender_name(blob.get("source_cv_id"))
+            cache_key_text = cl_service.serialize_blob(blob) + "\x00" + sender_name
+            expected_hash = pdf_store.cover_letter_content_hash(cache_key_text)
+    # `normalized_blob_for_row` parses stored YAML leniently, but `serialize_blob`
+    # re-runs the strict envelope validation, so a letter saved before those caps
+    # existed (e.g. a body carrying U+200B/U+00AD) raises CoverLetterError here.
+    # Readiness must degrade to "no fresh artifact" and report a blocker; letting
+    # this escape would turn GET .../apply/readiness into a 400 and take the whole
+    # Application Studio panel down for that job.
+    except (pdf_store.StorageError, TypeError, ValueError, cl_service.CoverLetterError):
+        return None
+
+    rows = (
+        _user_sb()
+        .table("pdf_artifacts")
+        .select(
+            "id, document_id, r2_key, content_hash, generation_id, stale, page_count"
+        )
+        .eq("document_id", doc_id)
+        .eq("stale", False)
+        .limit(2)
+        .execute()
+        .data
+        or []
+    )
+    # A normal build deletes superseded artifacts before inserting the current
+    # one. Multiple rows marked fresh indicate bypassed or corrupt metadata;
+    # rejecting the set avoids arbitrary first-row selection.
+    if len(rows) != 1:
+        return None
+    row = rows[0]
+    try:
+        expected_key = pdf_store.verified_artifact_key(
+            doc_id,
+            expected_hash,
+            row.get("generation_id"),
+        )
+    except (pdf_store.StorageError, TypeError, ValueError):
+        return None
+    if row.get("content_hash") != expected_hash or row.get("r2_key") != expected_key:
+        return None
+    try:
+        page_count = int(row.get("page_count") or 0)
     except (TypeError, ValueError):
-        return False
-    return pdf_store.r2_object_exists(row["r2_key"].strip())
+        return None
+    if page_count < 1 or (require_one_page and page_count != 1):
+        return None
+    if not pdf_store.r2_object_exists(expected_key):
+        return None
+    return row
+
+
+def _cover_letter_sender_name(source_cv_id: object) -> str:
+    """Mirror the cover-letter build's current source-CV signer input."""
+    if not isinstance(source_cv_id, str) or not _is_uuid(source_cv_id):
+        return ""
+    try:
+        row = cl_service.document_by_id(source_cv_id, "cv")
+    except Exception as exc:  # noqa: BLE001 - readiness must not guess on lookup failure
+        raise pdf_store.StorageError("cover-letter signer lookup failed") from exc
+    if row is None:
+        return ""
+    try:
+        cv = yaml.safe_load(row.get("yaml_blob") or "")
+    except Exception as exc:  # noqa: BLE001 - readiness must not guess on invalid input
+        raise pdf_store.StorageError("cover-letter signer content is invalid") from exc
+    if isinstance(cv, dict):
+        return str(cv.get("name") or "").strip()
+    return ""
 
 
 def _content_hash(text: str) -> str:

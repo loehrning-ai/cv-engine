@@ -337,17 +337,19 @@ class AccountPurgeWorker:
                 "unsupported account deletion worker database contract"
             )
         if not self._r2_store.enabled:
-            artifacts = (
-                self._supabase.table("pdf_artifacts")
-                .select("id")
-                .limit(1)
-                .execute()
-                .data
-                or []
-            )
-            if artifacts:
+            artifact_evidence = []
+            for table in ("pdf_artifacts", "pdf_artifact_cleanup_queue"):
+                artifact_evidence.extend(
+                    self._supabase.table(table)
+                    .select("id")
+                    .limit(1)
+                    .execute()
+                    .data
+                    or []
+                )
+            if artifact_evidence:
                 raise PurgeConfigurationError(
-                    "R2 never-used assertion conflicts with artifact rows"
+                    "R2 never-used assertion conflicts with artifact evidence"
                 )
 
     def _claim_is_current(self, claim: PurgeClaim) -> bool:
@@ -371,18 +373,20 @@ class AccountPurgeWorker:
         for claim in claims:
             try:
                 if not self._r2_store.enabled:
-                    artifacts = (
-                        self._supabase.table("pdf_artifacts")
-                        .select("id")
-                        .eq("owner_id", claim.owner_id)
-                        .limit(1)
-                        .execute()
-                        .data
-                        or []
-                    )
-                    if artifacts:
+                    artifact_evidence = []
+                    for table in ("pdf_artifacts", "pdf_artifact_cleanup_queue"):
+                        artifact_evidence.extend(
+                            self._supabase.table(table)
+                            .select("id")
+                            .eq("owner_id", claim.owner_id)
+                            .limit(1)
+                            .execute()
+                            .data
+                            or []
+                        )
+                    if artifact_evidence:
                         raise PurgeExternalError(
-                            "R2 is unavailable while artifact rows still exist"
+                            "R2 is unavailable while artifact evidence still exists"
                         )
                 r2_objects += self._r2_store.delete_owner_objects(claim.owner_id)
                 if delete_owner_photo_directory(self._photo_root, claim.owner_id):

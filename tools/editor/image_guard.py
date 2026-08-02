@@ -197,7 +197,11 @@ def validate_data_uri_image(value: str) -> ImageInfo:
     return validate_image_bytes(data)
 
 
-def sanitise_image_bytes(data: bytes) -> tuple[bytes, ImageInfo]:
+def sanitise_image_bytes(
+    data: bytes,
+    *,
+    output_format: str | None = None,
+) -> tuple[bytes, ImageInfo]:
     """Decode and re-encode an accepted raster without source metadata.
 
     Validation runs before full decode. Re-encoding applies EXIF orientation
@@ -206,6 +210,9 @@ def sanitise_image_bytes(data: bytes) -> tuple[bytes, ImageInfo]:
     pixel caps.
     """
     original = validate_image_bytes(data)
+    target_format = (output_format or original.fmt).upper()
+    if target_format not in _ALLOWED_FORMATS:
+        raise ImageRejected("unsupported output image type")
     try:
         from PIL import Image, ImageOps
 
@@ -213,13 +220,13 @@ def sanitise_image_bytes(data: bytes) -> tuple[bytes, ImageInfo]:
             source.load()
             image = ImageOps.exif_transpose(source)
             out = io.BytesIO()
-            if original.fmt == "JPEG":
+            if target_format == "JPEG":
                 if image.mode not in {"RGB", "L"}:
                     image = image.convert("RGB")
                 image.save(out, format="JPEG", quality=90, optimize=True)
-            elif original.fmt == "PNG":
+            elif target_format == "PNG":
                 image.save(out, format="PNG", optimize=True)
-            elif original.fmt == "WEBP":
+            elif target_format == "WEBP":
                 if image.mode not in {"RGB", "RGBA"}:
                     image = image.convert("RGBA" if "A" in image.getbands() else "RGB")
                 image.save(out, format="WEBP", quality=90, method=6)
@@ -232,6 +239,6 @@ def sanitise_image_bytes(data: bytes) -> tuple[bytes, ImageInfo]:
 
     cleaned = out.getvalue()
     info = validate_image_bytes(cleaned)
-    if info.fmt != original.fmt:
+    if info.fmt != target_format:
         raise ImageRejected("image format changed during sanitization")
     return cleaned, info
