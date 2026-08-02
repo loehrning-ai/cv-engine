@@ -373,6 +373,10 @@
                 <span>YAML</span>
               </button>
             </div>
+            <div id="form-mode-toggle" class="form-mode-toggle" role="group" aria-label="Form layout">
+              <button type="button" class="form-mode-btn is-active" data-form-mode="focus" aria-pressed="true">Focus</button>
+              <button type="button" class="form-mode-btn" data-form-mode="overview" aria-pressed="false">Overview</button>
+            </div>
             <button
               id="collapse-all-btn"
               type="button"
@@ -401,6 +405,29 @@
               Form is the source of truth — switching to YAML re-serialises it.
             </span>
           </div>
+          <nav id="focus-section-nav" class="focus-section-nav" aria-label="Section navigation">
+            <button id="focus-section-prev" type="button" class="focus-section-step" aria-label="Previous section">
+              <span data-icon="arrow-left" data-icon-size="13" aria-hidden="true"></span>
+              <span class="focus-section-step-label">Previous</span>
+            </button>
+            <div class="focus-section-status" aria-live="polite">
+              <span id="focus-section-label" class="focus-section-label">Header</span>
+              <span id="focus-section-count" class="focus-section-count">1 / 1</span>
+              <span
+                id="focus-section-progress"
+                class="focus-section-progress"
+                role="progressbar"
+                aria-label="Form section progress"
+                aria-valuemin="1"
+                aria-valuemax="1"
+                aria-valuenow="1"
+              ><span></span></span>
+            </div>
+            <button id="focus-section-next" type="button" class="focus-section-step" aria-label="Next section">
+              <span class="focus-section-step-label">Next</span>
+              <span data-icon="arrow-right" data-icon-size="13" aria-hidden="true"></span>
+            </button>
+          </nav>
           <div id="editor-host">
             <div id="form-host" class="form-host"></div>
             <div id="yaml-host" class="yaml-host">

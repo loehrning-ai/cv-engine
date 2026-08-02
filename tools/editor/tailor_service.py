@@ -948,20 +948,29 @@ def _insert_tailored_cv(
     500 if the insert returns nothing (so we never report a success without a
     row).
     """
-    insert: dict[str, Any] = {"type": "cv", "name": name, "yaml_blob": yaml_blob}
-    for col in ("accent", "font", "density"):
-        if source_row.get(col) is not None:
-            insert[col] = source_row[col]
-    if job_id is not None:
-        insert["job_id"] = job_id
-    sb = _doc_sb()
-    resp = sb.table("documents").insert(insert).execute()
-    rows = resp.data or []
-    if not rows:
+    try:
+        row = cl_service.insert_document(
+            "cv",
+            name,
+            yaml_blob,
+            job_id=job_id,
+            accent=source_row.get("accent"),
+            font=source_row.get("font"),
+            density=source_row.get("density"),
+        )
+    except cl_service.DocumentInsertError as exc:
+        raise TailorError(
+            409,
+            {
+                "error": "Account or job is unavailable.",
+                "code": exc.code,
+            },
+        ) from exc
+    if not row:
         raise TailorError(
             500, {"error": "Failed to save the tailored CV.", "code": "insert_failed"}
         )
-    return rows[0]
+    return row
 
 
 # ---------------------------------------------------------------------------

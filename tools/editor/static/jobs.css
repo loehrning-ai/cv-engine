@@ -335,7 +335,7 @@
 }
 .jb-why--detail { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
 
-/* ── Card footer: Details + Generate/Open split ─────────────────────────── */
+/* ── Card footer: detail + canonical application flow ──────────────────── */
 .jb-card-foot { display: flex; gap: 8px; margin-top: auto; padding-top: 2px; }
 .jb-card-btn { font-size: var(--btn-md-font, 12px); padding: var(--btn-md-pad, 8px 14px); flex: 1 1 0; justify-content: center; }
 .jb-card-open { color: var(--success); border-color: var(--success); }
@@ -404,11 +404,110 @@
 .jb-del-btn { color: var(--text-muted); }
 .jb-del-btn:hover { color: var(--danger); background: var(--danger-soft, var(--bg-hover)); border-color: var(--danger); }
 
-/* One-click generate block. */
+/* ── Connected Application Studio ──────────────────────────────────────── */
+.jb-application-studio {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg-subtle, var(--bg-elevated));
+}
+.jb-studio-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.jb-studio-head .cl-h3,
+.jb-readiness-head .cl-h3 {
+  margin: 0;
+}
+.jb-studio-head .cl-sub,
+.jb-readiness-head .cl-sub {
+  margin: 4px 0 0;
+}
+.jb-application-flow {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.jb-application-flow li {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  align-content: start;
+  gap: 6px;
+  min-width: 0;
+  padding: 8px 4px;
+  color: var(--text-faint, var(--text-muted));
+  font-size: 10.5px;
+  font-weight: 650;
+  line-height: 1.25;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+.jb-application-flow li:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  top: 20px;
+  left: calc(50% + 17px);
+  width: calc(100% - 26px + 8px);
+  border-top: 1px solid var(--border-strong, var(--border));
+}
+.jb-flow-index {
+  position: relative;
+  z-index: 1;
+  display: inline-grid;
+  place-items: center;
+  width: 25px;
+  height: 25px;
+  border: 1px solid var(--border-strong, var(--border));
+  border-radius: 50%;
+  background: var(--bg-surface);
+  color: inherit;
+  font-size: 10px;
+  font-weight: 750;
+}
+.jb-application-flow li[data-flow-state="complete"] {
+  color: var(--success);
+}
+.jb-application-flow li[data-flow-state="complete"] .jb-flow-index {
+  border-color: var(--success);
+  background: var(--success-soft, var(--bg-surface));
+}
+.jb-application-flow li[data-flow-state="complete"] .jb-flow-index::before {
+  content: "\2713";
+}
+.jb-application-flow li[data-flow-state="complete"] .jb-flow-index {
+  font-size: 0;
+}
+.jb-application-flow li[data-flow-state="complete"] .jb-flow-index::before {
+  font-size: 11px;
+}
+.jb-application-flow li[data-flow-state="current"] {
+  color: var(--accent);
+}
+.jb-application-flow li[data-flow-state="current"] .jb-flow-index {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-fg);
+  box-shadow: 0 0 0 3px var(--accent-mist, transparent);
+}
+.jb-application-flow li[data-flow-state="blocked"] {
+  color: var(--danger);
+}
+.jb-application-flow li[data-flow-state="blocked"] .jb-flow-index {
+  border-color: var(--danger);
+  background: var(--danger-soft, var(--bg-surface));
+}
+
+/* Review-first builder. */
 .jb-oneclick {
-  position: sticky;
-  top: 0;
-  z-index: 3;
+  position: relative;
   padding: 14px 16px;
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -419,6 +518,7 @@
 .jb-oneclick-row .cl-select { flex: 1 1 180px; min-width: 0; }
 .jb-generate-btn { margin-top: 0; width: auto; flex: 0 1 auto; min-width: 0; }
 .jb-review-btn { margin-top: 0; width: auto; flex: 0 1 auto; min-width: 0; }
+.jb-review-btn[hidden] { display: none; }
 .jb-oneclick-note { margin: 10px 0 0; }
 .jb-review-panel {
   margin-top: 12px;
@@ -566,7 +666,6 @@
 .jb-packet-row[data-packet-state="review_prepared"] .jb-packet-status {
   color: var(--warning);
 }
-.jb-packet-row[data-packet-state="applied_external"] .jb-packet-status,
 .jb-packet-row[data-packet-state="packet_created"] .jb-packet-status,
 .jb-packet-row[data-packet-state="regenerated"] .jb-packet-status {
   color: var(--success);
@@ -599,6 +698,213 @@
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+/* Backend-verifiable readiness and guarded manual handoff. */
+.jb-apply-readiness {
+  display: grid;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-surface);
+}
+.jb-readiness-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.jb-readiness-refresh {
+  flex: 0 0 auto;
+  width: auto;
+  margin-top: 0;
+}
+.jb-readiness-body {
+  display: grid;
+  gap: 12px;
+}
+.jb-readiness-summary {
+  margin: 0;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  font-size: 12.5px;
+  font-weight: 650;
+}
+.jb-readiness-summary.is-ready {
+  border-color: var(--success);
+  background: var(--success-soft, var(--bg-elevated));
+  color: var(--success);
+}
+.jb-readiness-summary.is-blocked {
+  border-color: var(--warning);
+  background: var(--warning-soft, var(--bg-elevated));
+  color: var(--warning);
+}
+.jb-readiness-subhead {
+  margin: 0 0 7px;
+  color: var(--text-muted);
+  font-size: 10.5px;
+  font-weight: 750;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+.jb-readiness-target,
+.jb-readiness-blockers,
+.jb-readiness-evidence,
+.jb-apply-attempts {
+  min-width: 0;
+}
+.jb-target-reason {
+  margin: 7px 0 0;
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+.jb-evidence-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  margin: 0;
+}
+.jb-evidence-grid > div {
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--bg-elevated);
+}
+.jb-evidence-grid dt {
+  margin: 0 0 2px;
+  color: var(--text-faint, var(--text-muted));
+  font-size: 9.5px;
+  font-weight: 750;
+  letter-spacing: .035em;
+  text-transform: uppercase;
+}
+.jb-evidence-grid dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.jb-evidence-grid code,
+.jb-blocker-list code {
+  color: inherit;
+  font: inherit;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.jb-blocker-list {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.jb-blocker-list li {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  padding: 8px 9px;
+  border: 1px solid var(--warning);
+  border-radius: 8px;
+  background: var(--warning-soft, var(--bg-elevated));
+  color: var(--text);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+.jb-blocker-message {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.jb-blocker-list code {
+  flex: 0 1 auto;
+  color: var(--warning);
+  font-size: 9.5px;
+  font-weight: 700;
+  text-align: right;
+}
+.jb-apply-confirmations {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 8px);
+  background: var(--bg-elevated);
+}
+.jb-apply-confirmations:disabled {
+  opacity: .62;
+}
+.jb-apply-confirmations legend {
+  padding: 0 5px;
+  color: var(--text);
+  font-size: 11.5px;
+  font-weight: 750;
+}
+.jb-apply-confirmations label {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+.jb-apply-confirmations input {
+  margin-top: 2px;
+}
+.jb-manual-open-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.jb-manual-open-actions .cl-btn {
+  width: auto;
+  margin-top: 0;
+}
+.jb-apply-open-link {
+  color: var(--success);
+  border-color: var(--success);
+}
+.jb-apply-open-link[hidden] { display: none; }
+.jb-manual-open-note {
+  margin: -3px 0 0;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.jb-apply-result {
+  margin: 0;
+}
+.jb-apply-result .jb-evidence-grid,
+.jb-apply-result .jb-blocker-list {
+  margin-top: 9px;
+}
+.jb-attempt-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.jb-attempt-list > li {
+  min-width: 0;
+  padding-left: 8px;
+  border-left: 3px solid var(--border-strong, var(--border));
+}
+.jb-attempt-list > li[data-attempt-status="manual_open_ready"] {
+  border-left-color: var(--success);
+}
+.jb-attempt-list > li[data-attempt-status="blocked"] {
+  border-left-color: var(--warning);
 }
 
 /* JD disclosure. */
@@ -684,8 +990,52 @@
     grid-template-columns: 1fr;
   }
   .jb-search { width: auto; flex: 1 1 auto; max-width: none; }
+  .jb-application-studio {
+    padding: 12px;
+  }
+  .jb-application-flow {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+  .jb-application-flow li {
+    grid-template-columns: auto minmax(0, 1fr);
+    justify-items: start;
+    align-items: center;
+    padding: 4px 2px;
+    text-align: left;
+  }
+  .jb-application-flow li:not(:last-child)::after {
+    top: 29px;
+    bottom: -5px;
+    left: 14px;
+    width: 0;
+    border-top: 0;
+    border-left: 1px solid var(--border-strong, var(--border));
+  }
   .jb-oneclick-row { flex-direction: column; }
+  .jb-oneclick-row .cl-select { flex: none; min-height: 36px; }
   .jb-generate-btn, .jb-review-btn { width: 100%; justify-content: center; }
+  .jb-readiness-head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .jb-readiness-refresh {
+    width: 100%;
+    justify-content: center;
+  }
+  .jb-evidence-grid {
+    grid-template-columns: 1fr;
+  }
+  .jb-blocker-list li {
+    flex-direction: column;
+  }
+  .jb-blocker-list code {
+    text-align: left;
+  }
+  .jb-manual-open-actions .cl-btn {
+    width: 100%;
+    justify-content: center;
+  }
   .jb-field-row { flex-direction: column; gap: 0; }
   .jb-sort { min-width: 0; max-width: 100%; }
   .jb-primary-actions {

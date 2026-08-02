@@ -10,9 +10,9 @@
       (field / deadline / confidence / your-note)
     • a sortable, filterable, searchable GRID of cards: status badge, field pill,
       deadline pill (soon/closed), a confidence bar, a has-cover badge
-    • a per-card split button: Generate (→ review-first packet flow via the
-      detail pane) OR Open (→ /cover-letters?id=<cover_id>)
-    • a detail pane: source-CV picker, status edit, linked tailored CVs + letters
+    • a single per-job Build application action that enters a review-first flow
+    • an Application Studio connecting job → source CV → review → CV + letter
+      → backend-verified readiness → explicitly confirmed manual handoff
 
   The server enforces the safety contract (SSRF guard on the URL; the
   anti-fabrication + 1-page guards in the one-click chain; the cross-tenant
@@ -23,6 +23,7 @@
   "use strict";
 
   var $ = function (sel) { return document.querySelector(sel); };
+  var UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   var JOB_SOURCE_DEFAULTS_KEY = "cv.editor.job_source_defaults";
   var FRESHNESS_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -35,12 +36,229 @@
     return v && v !== key ? v : fallback;
   }
 
+  // Application Studio copy is kept here because this lane is intentionally
+  // self-contained in jobs.{html,js,css}. It follows the shared EN/DE toggle.
+  var STUDIO_COPY = {
+    en: {
+      detail_empty: "Select a job. Then choose a source CV, review grounded changes, create the CV + letter packet, and clear readiness blockers.",
+      studio_title: "Application Studio",
+      studio_intro: "One connected, review-first path. Nothing is submitted automatically.",
+      flow_aria: "Application build progress",
+      flow_job: "Job",
+      flow_source: "Source CV",
+      flow_review: "Review",
+      flow_packet: "CV + letter",
+      flow_ready: "Ready",
+      flow_complete: "complete",
+      flow_current: "current step",
+      flow_pending: "pending",
+      flow_blocked: "blocked",
+      source_cv_label: "2. Choose the source CV",
+      build_application: "Build application",
+      build_busy: "Preparing review…",
+      build_note: "First review grounded CV changes. Only after approval is the linked CV + cover-letter packet created.",
+      empty_jobs: "No saved jobs yet. Open “Save a job” to create the job record that starts an application.",
+      card_build: "Build application",
+      readiness_title: "5. Application readiness",
+      readiness_intro: "Backend-verified blockers and manual-handoff evidence.",
+      readiness_loading: "Checking readiness…",
+      readiness_error: "Readiness could not be verified.",
+      readiness_ready: "Ready for a confirmed manual handoff.",
+      readiness_blocked: "Not ready. Resolve every blocker below.",
+      readiness_config_blocked: "The documents are ready, but manual-open actions are disabled by server policy.",
+      readiness_no_packet: "Create and review the CV + letter packet before manual handoff.",
+      refresh: "Refresh",
+      refresh_busy: "Checking…",
+      target: "External target",
+      target_missing: "No safe external target is available.",
+      target_reason: "Policy",
+      target_host: "Host",
+      target_classification: "Classification",
+      packet_evidence: "Readiness evidence",
+      packet: "Packet",
+      source_cv: "Source CV",
+      tailored_cv: "Tailored CV",
+      cover_letter: "Cover letter",
+      review_status: "Review",
+      packet_version: "Packet version",
+      prompt_version: "Prompt version",
+      score_system: "Score system",
+      updated: "Updated",
+      blockers: "Blockers",
+      blocker_code: "Code",
+      source_mismatch: "The readiness packet belongs to a different source CV. Build or select a packet for the chosen source CV.",
+      config_unavailable: "Manual-open actions are disabled by the server safety configuration.",
+      confirm_legend: "Explicit manual-open confirmations",
+      confirm_user: "I understand this only prepares a manual external-page handoff; it does not submit.",
+      confirm_reviewed: "I reviewed the tailored CV and cover letter in this packet.",
+      confirm_profile: "Required profile answers are complete and accurate.",
+      confirm_legal: "I confirmed all legal declarations myself.",
+      confirm_visa: "I confirmed visa and work-authorization answers myself.",
+      confirm_open: "Confirm manual open",
+      confirm_open_busy: "Validating…",
+      open_external: "Open application page",
+      manual_only: "Manual handoff only. This app never fills or submits the external form.",
+      confirmation_needed: "Check every confirmation before validating the manual handoff.",
+      attempt_ready: "Manual-open attempt validated. No submission or browser automation occurred.",
+      attempt_blocked: "Manual-open attempt was blocked.",
+      attempt_invalid: "Manual-open response did not match the verified job, packet, target, and attempt evidence.",
+      attempts: "Attempt evidence",
+      attempt: "Attempt",
+      action: "Action",
+      status: "Status",
+      reason: "Reason",
+      submitted: "Submitted",
+      automated: "Automated",
+      created: "Created",
+      yes: "Yes",
+      no: "No"
+    },
+    de: {
+      detail_empty: "Job auswählen. Dann Quell-Lebenslauf wählen, fundierte Änderungen prüfen, das Paket aus Lebenslauf und Anschreiben erstellen und Bereitschaftsblocker beheben.",
+      studio_title: "Bewerbungsstudio",
+      studio_intro: "Ein verbundener, prüfungsorientierter Ablauf. Nichts wird automatisch abgesendet.",
+      flow_aria: "Fortschritt der Bewerbungserstellung",
+      flow_job: "Job",
+      flow_source: "Quell-Lebenslauf",
+      flow_review: "Prüfung",
+      flow_packet: "Lebenslauf + Anschreiben",
+      flow_ready: "Bereit",
+      flow_complete: "abgeschlossen",
+      flow_current: "aktueller Schritt",
+      flow_pending: "ausstehend",
+      flow_blocked: "blockiert",
+      source_cv_label: "2. Quell-Lebenslauf wählen",
+      build_application: "Bewerbung erstellen",
+      build_busy: "Prüfung wird vorbereitet…",
+      build_note: "Zuerst fundierte Lebenslaufänderungen prüfen. Erst nach Freigabe wird das verknüpfte Paket aus Lebenslauf und Anschreiben erstellt.",
+      empty_jobs: "Noch keine gespeicherten Jobs. „Job speichern“ öffnen, um den Jobdatensatz für eine Bewerbung anzulegen.",
+      card_build: "Bewerbung erstellen",
+      readiness_title: "5. Bewerbungsbereitschaft",
+      readiness_intro: "Vom Backend geprüfte Blocker und Nachweise für die manuelle Übergabe.",
+      readiness_loading: "Bereitschaft wird geprüft…",
+      readiness_error: "Die Bereitschaft konnte nicht verifiziert werden.",
+      readiness_ready: "Bereit für eine bestätigte manuelle Übergabe.",
+      readiness_blocked: "Nicht bereit. Alle folgenden Blocker beheben.",
+      readiness_config_blocked: "Die Dokumente sind bereit, aber Aktionen zum manuellen Öffnen sind durch die Serverrichtlinie deaktiviert.",
+      readiness_no_packet: "Vor der manuellen Übergabe das Paket aus Lebenslauf und Anschreiben erstellen und prüfen.",
+      refresh: "Aktualisieren",
+      refresh_busy: "Prüfung…",
+      target: "Externes Ziel",
+      target_missing: "Kein sicheres externes Ziel verfügbar.",
+      target_reason: "Richtlinie",
+      target_host: "Host",
+      target_classification: "Klassifizierung",
+      packet_evidence: "Bereitschaftsnachweis",
+      packet: "Paket",
+      source_cv: "Quell-Lebenslauf",
+      tailored_cv: "Angepasster Lebenslauf",
+      cover_letter: "Anschreiben",
+      review_status: "Prüfung",
+      packet_version: "Paketversion",
+      prompt_version: "Prompt-Version",
+      score_system: "Bewertungssystem",
+      updated: "Aktualisiert",
+      blockers: "Blocker",
+      blocker_code: "Code",
+      source_mismatch: "Das Bereitschaftspaket gehört zu einem anderen Quell-Lebenslauf. Für den gewählten Quell-Lebenslauf ein Paket erstellen oder auswählen.",
+      config_unavailable: "Aktionen zum manuellen Öffnen sind durch die Sicherheitskonfiguration des Servers deaktiviert.",
+      confirm_legend: "Explizite Bestätigungen für manuelles Öffnen",
+      confirm_user: "Ich verstehe, dass dies nur eine manuelle Übergabe an eine externe Seite vorbereitet und nichts absendet.",
+      confirm_reviewed: "Ich habe den angepassten Lebenslauf und das Anschreiben dieses Pakets geprüft.",
+      confirm_profile: "Alle erforderlichen Profilangaben sind vollständig und korrekt.",
+      confirm_legal: "Ich habe alle rechtlichen Erklärungen selbst bestätigt.",
+      confirm_visa: "Ich habe Angaben zu Visum und Arbeitserlaubnis selbst bestätigt.",
+      confirm_open: "Manuelles Öffnen bestätigen",
+      confirm_open_busy: "Validierung…",
+      open_external: "Bewerbungsseite öffnen",
+      manual_only: "Nur manuelle Übergabe. Diese App füllt das externe Formular nie aus und sendet es nie ab.",
+      confirmation_needed: "Vor der Validierung der manuellen Übergabe alle Bestätigungen aktivieren.",
+      attempt_ready: "Der Versuch zum manuellen Öffnen wurde validiert. Es erfolgte keine Übermittlung oder Browserautomatisierung.",
+      attempt_blocked: "Der Versuch zum manuellen Öffnen wurde blockiert.",
+      attempt_invalid: "Die Antwort zum manuellen Öffnen stimmt nicht mit den geprüften Job-, Paket-, Ziel- und Versuchsnachweisen überein.",
+      attempts: "Versuchsnachweise",
+      attempt: "Versuch",
+      action: "Aktion",
+      status: "Status",
+      reason: "Grund",
+      submitted: "Abgesendet",
+      automated: "Automatisiert",
+      created: "Erstellt",
+      yes: "Ja",
+      no: "Nein"
+    }
+  };
+
+  var BLOCKER_COPY_DE = {
+    missing_application_url: "Der Job hat keine Bewerbungs-URL.",
+    invalid_application_url: "Die Bewerbungs-URL kann nicht sicher geöffnet werden.",
+    full_jd_required: "Die vollständige Stellenbeschreibung ist erforderlich.",
+    packet_not_found: "Das angeforderte Bewerbungspaket wurde nicht gefunden.",
+    reviewed_packet_missing: "Ein geprüftes Bewerbungspaket ist erforderlich.",
+    packet_archived: "Das Bewerbungspaket ist archiviert.",
+    packet_not_reviewed: "Das Bewerbungspaket wurde nicht geprüft.",
+    packet_prompt_version_stale: "Die Prompt-Version des Bewerbungspakets ist veraltet.",
+    packet_version_stale: "Die Version des Bewerbungspakets ist veraltet.",
+    score_system_missing: "Die Herkunft des Bewertungssystems fehlt.",
+    tailored_cv_missing: "Der geprüfte angepasste Lebenslauf fehlt.",
+    cover_letter_missing: "Das geprüfte Anschreiben fehlt.",
+    profile_answers_incomplete: "Erforderliche Profilangaben sind unvollständig.",
+    legal_answers_unconfirmed: "Rechtliche Angaben wurden nicht bestätigt.",
+    visa_answers_unconfirmed: "Angaben zu Visum und Arbeitserlaubnis wurden nicht bestätigt.",
+    tailored_cv_unlinked: "Der angepasste Lebenslauf ist nicht mit diesem Job verknüpft.",
+    tailored_cv_pdf_missing: "Vor der Bewerbung muss ein aktuelles einseitiges Lebenslauf-PDF erstellt werden.",
+    cover_letter_unlinked: "Das Anschreiben ist nicht mit diesem Job verknüpft.",
+    cover_letter_pdf_missing: "Vor der Bewerbung muss ein aktuelles Anschreiben-PDF erstellt werden.",
+    source_cv_missing: "Die Herkunft zum Quell-Lebenslauf fehlt.",
+    source_cv_hash_missing: "Der Herkunfts-Hash des Quell-Lebenslaufs fehlt.",
+    source_cv_stale: "Der Quell-Lebenslauf wurde nach Erstellung des Pakets geändert.",
+    job_content_hash_missing: "Der Herkunfts-Hash der Stellenbeschreibung fehlt.",
+    job_description_stale: "Die Stellenbeschreibung wurde nach Erstellung des Pakets geändert.",
+    tailored_cv_hash_missing: "Der Herkunfts-Hash des angepassten Lebenslaufs fehlt.",
+    tailored_cv_stale: "Der angepasste Lebenslauf wurde nach Erstellung des Pakets geändert.",
+    cover_letter_hash_missing: "Der Herkunfts-Hash des Anschreibens fehlt.",
+    cover_letter_stale: "Das Anschreiben wurde nach Erstellung des Pakets geändert.",
+    cover_letter_review_unconfirmed: "Die Prüfung des Anschreibens wurde nicht bestätigt.",
+    cover_letter_review_id_missing: "Die Prüfungs-ID des Anschreibens fehlt.",
+    cover_letter_review_timestamp_missing: "Der Prüfungszeitpunkt des Anschreibens fehlt."
+  };
+
+  function studioText(key) {
+    var lang = window.OnePagerI18n && window.OnePagerI18n.getLang
+      ? window.OnePagerI18n.getLang()
+      : "en";
+    var dict = STUDIO_COPY[lang] || STUDIO_COPY.en;
+    return dict[key] || STUDIO_COPY.en[key] || key;
+  }
+
+  function blockerText(blocker) {
+    var code = blocker && blocker.code ? String(blocker.code) : "";
+    if (window.OnePagerI18n && window.OnePagerI18n.getLang && window.OnePagerI18n.getLang() === "de") {
+      return BLOCKER_COPY_DE[code] || (blocker && blocker.message) || code;
+    }
+    return (blocker && blocker.message) || code;
+  }
+
+  function localizeApplicationStudio(root) {
+    var scope = root || document;
+    scope.querySelectorAll("[data-jb-copy]").forEach(function (node) {
+      node.textContent = studioText(node.getAttribute("data-jb-copy"));
+    });
+    scope.querySelectorAll("[data-jb-copy-attr]").forEach(function (node) {
+      node.getAttribute("data-jb-copy-attr").split(",").forEach(function (pair) {
+        var parts = pair.split(":");
+        if (parts.length === 2) node.setAttribute(parts[0].trim(), studioText(parts[1].trim()));
+      });
+    });
+  }
+
   var state = {
     jobs: [],            // the catalog (immutable-replaced on changes)
     jobId: null,         // open detail
     detailReq: 0,
     navReq: 0,
     statusReq: 0,
+    statusInFlight: null,
     packetReq: 0,
     packetActionReq: 0,
     sourceReq: 0,
@@ -48,6 +266,9 @@
     importPreviewReq: 0,
     localSearchReq: 0,
     importMutationReq: 0,
+    readinessReq: 0,
+    applyOpenReq: 0,
+    applyOpenInFlight: false,
     applyReviewInFlight: false,
     loadError: null,
     filter: "all",       // active chip
@@ -73,6 +294,8 @@
     fullJdDrafts: {},
     detailJob: null,
     detailPackets: [],
+    applyReadiness: null,
+    applyAttempt: null,
     importRunId: null,
     importResults: [],
     jobDefaultsApplied: false,
@@ -81,7 +304,18 @@
 
   function requestedJobId() {
     try {
-      return new URLSearchParams(window.location.search || "").get("id");
+      var params = new URLSearchParams(window.location.search || "");
+      var legacyId = new URLSearchParams(window.location.search || "").get("id");
+      return params.get("job_id") || legacyId;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function requestedSourceCvId() {
+    try {
+      var params = new URLSearchParams(window.location.search || "");
+      return params.get("source_cv_id") || params.get("cv_id");
     } catch (_) {
       return null;
     }
@@ -90,8 +324,26 @@
   function syncJobUrl(id) {
     if (!window.history || !window.history.replaceState) return;
     var url = new URL(window.location.href);
-    if (id) url.searchParams.set("id", id);
-    else url.searchParams.delete("id");
+    if (id) {
+      url.searchParams.set("id", id);
+      if (url.searchParams.has("job_id")) url.searchParams.set("job_id", id);
+    } else {
+      url.searchParams.delete("id");
+      url.searchParams.delete("job_id");
+    }
+    window.history.replaceState(null, "", url.pathname + url.search + url.hash);
+  }
+
+  function syncSourceCvUrl(cvId) {
+    if (!window.history || !window.history.replaceState) return;
+    var url = new URL(window.location.href);
+    if (cvId) {
+      url.searchParams.set("cv_id", cvId);
+      if (url.searchParams.has("source_cv_id")) url.searchParams.set("source_cv_id", cvId);
+    } else {
+      url.searchParams.delete("cv_id");
+      url.searchParams.delete("source_cv_id");
+    }
     window.history.replaceState(null, "", url.pathname + url.search + url.hash);
   }
 
@@ -109,19 +361,44 @@
     if (sourceInput) sourceInput.value = "";
     state.navReq++;
     state.applyReviewInFlight = false;
+    state.applyReadiness = null;
+    state.applyAttempt = null;
+    state.readinessReq++;
+    state.applyOpenReq++;
     resetJobActionControls();
     clearPacketReview();
+    resetApplicationReadiness();
     renderGrid();
     syncJobUrl(null);
   }
 
   // Status label for a status key — i18n-resolved live so it follows the toggle.
   function statusLabel(status) {
+    if (status === "applied") {
+      return t("jobs.status.applied", "Unverified legacy application note");
+    }
     var defaults = {
       saved: "Saved", open: "Open", speculative: "Speculative",
-      applied: "Applied", closed: "Closed"
+      closed: "Closed"
     };
     return t("jobs.status." + status, defaults[status] || status);
+  }
+  function syncStatusSelect(job) {
+    var select = $("#jb-status-select");
+    if (!select) return;
+    Array.prototype.slice.call(select.querySelectorAll("option[data-legacy-status]")).forEach(function (option) {
+      option.remove();
+    });
+    var status = job && job.status || "saved";
+    if (status === "applied") {
+      var legacy = document.createElement("option");
+      legacy.value = "applied";
+      legacy.disabled = true;
+      legacy.dataset.legacyStatus = "true";
+      legacy.textContent = statusLabel("applied");
+      select.appendChild(legacy);
+    }
+    select.value = status;
   }
   // Smart-sort precedence for the lifecycle (lower = earlier).
   var STATUS_ORDER = { open: 0, speculative: 1, saved: 2, applied: 3, closed: 4 };
@@ -629,13 +906,12 @@
     var provenance = provenanceBadges(job);
     var starBusy = !!state.starReqs[job.id];
 
-    // Split button: Open (has a cover) OR Generate (kicks off the guarded chain
-    // via the detail pane). data-act drives the click handler.
-    var primary = job.has_cover
-      ? '<button type="button" class="cl-btn jb-card-btn jb-card-open" data-act="open">' +
-        '<span data-icon="external-link" data-icon-size="13"></span><span>' + esc(t("jobs.card.open", "Open")) + "</span></button>"
-      : '<button type="button" class="cl-btn cl-btn-primary jb-card-btn jb-card-gen" data-act="generate">' +
-        '<span data-icon="sparkles" data-icon-size="13"></span><span>' + esc(t("jobs.card.generate", "Generate")) + "</span></button>";
+    // One canonical application action for every lifecycle state. Existing
+    // packets are surfaced inside the studio instead of changing this control
+    // into a second, ambiguous "Open" path.
+    var primary = '<button type="button" class="cl-btn cl-btn-primary jb-card-btn jb-card-gen" data-act="generate">' +
+      '<span data-icon="sparkles" data-icon-size="13"></span><span>' +
+      esc(t("jobs.card.generate", studioText("card_build"))) + "</span></button>";
 
     return (
       '<article class="jb-card' + (job.has_cover ? " has-cover" : "") +
@@ -690,21 +966,20 @@
       return;
     }
     var visible = sortJobs(state.jobs.filter(matches));
-    if (state.loadError) {
-      grid.innerHTML = '<p class="muted jb-empty jb-error">' + esc(state.loadError) + "</p>";
-      return;
-    }
+    var loadError = state.loadError
+      ? '<p class="muted jb-empty jb-error" role="alert">' + esc(state.loadError) + "</p>"
+      : "";
     if (!state.jobs.length) {
-      grid.innerHTML = '<p class="muted jb-empty">' +
-        esc(t("jobs.empty.none", "No saved jobs yet. Use “Save a job” above to add one.")) + "</p>";
+      grid.innerHTML = loadError || ('<p class="muted jb-empty">' +
+        esc(studioText("empty_jobs")) + "</p>");
       return;
     }
     if (!visible.length) {
-      grid.innerHTML = '<p class="muted jb-empty">' +
+      grid.innerHTML = loadError + '<p class="muted jb-empty">' +
         esc(t("jobs.empty.filter", "No jobs match this filter.")) + "</p>";
       return;
     }
-    grid.innerHTML = visible.map(cardHtml).join("");
+    grid.innerHTML = loadError + visible.map(cardHtml).join("");
     if (window.renderIcons) window.renderIcons(grid);
   }
 
@@ -712,8 +987,11 @@
   function loadJobs() {
     return jsonFetch("/api/jobs")
       .then(function (res) {
+        if (res.status !== 200 || !res.body || !Array.isArray(res.body.jobs)) {
+          throw new Error("jobs load failed");
+        }
         state.loadError = null;
-        state.jobs = (res.body && res.body.jobs) || [];
+        state.jobs = res.body.jobs;
       })
       .catch(function () {
         state.loadError = t("jobs.error.load", "Could not load saved jobs.");
@@ -1100,12 +1378,15 @@
     });
   }
 
-  // ── Source-CV picker (for the one-click generate) ─────────────────────────
+  // ── Source-CV picker (for the connected application flow) ────────────────
   function loadCvs() {
     return jsonFetch("/api/cvs").then(function (res) {
+      if (res.status !== 200 || !res.body || !Array.isArray(res.body.cvs)) {
+        throw new Error("CV load failed");
+      }
       var sel = $("#jb-source-cv");
       sel.innerHTML = "";
-      var cvs = (res.body && res.body.cvs) || [];
+      var cvs = res.body.cvs;
       if (!cvs.length) {
         var empty = document.createElement("option");
         empty.value = "";
@@ -1115,6 +1396,7 @@
         sel.appendChild(empty);
         var gen = $("#jb-generate");
         if (gen) gen.disabled = true;
+        renderApplicationFlow();
         return;
       }
       cvs.forEach(function (cv) {
@@ -1123,8 +1405,29 @@
         opt.textContent = cv.name || t("lib.untitled.cv", "Untitled CV");
         sel.appendChild(opt);
       });
+      var requested = requestedSourceCvId();
+      if (requested && cvs.some(function (cv) { return String(cv.id) === String(requested); })) {
+        sel.value = requested;
+        syncSourceCvUrl(requested);
+      }
       var gen = $("#jb-generate");
       if (gen) gen.disabled = false;
+      if (state.detailJob) syncDownstreamJobLinks(state.detailJob);
+      renderApplicationFlow();
+    }).catch(function () {
+      var sel = $("#jb-source-cv");
+      if (sel && !sel.options.length) {
+        var empty = document.createElement("option");
+        empty.value = "";
+        empty.disabled = true;
+        empty.selected = true;
+        empty.textContent = t("cl.feedback.load_cvs_failed", "Couldn't load your CVs.");
+        sel.appendChild(empty);
+      }
+      var gen = $("#jb-generate");
+      if (gen) gen.disabled = !selectedSourceCv();
+      setFeedback($("#jb-gen-feedback"), "error", esc(t("cl.feedback.load_cvs_failed", "Couldn't load your CVs.")));
+      renderApplicationFlow();
     });
   }
 
@@ -1145,11 +1448,14 @@
       return;
     }
     if (act === "generate") {
-      // Open the detail pane focused on the source-CV picker, then run the chain.
+      // Enter the canonical studio without triggering an AI or external action.
+      // The visible Build application button remains the explicit review start.
       openJob(id).then(function (opened) {
         if (!opened) return;
-        $("#jb-source-cv").focus();
-        generate();
+        var build = $("#jb-generate");
+        if (build) build.focus();
+        var studio = $("#jb-studio-heading");
+        if (studio && studio.scrollIntoView) studio.scrollIntoView({ behavior: "smooth", block: "start" });
       });
       return;
     }
@@ -1171,7 +1477,12 @@
     state.navReq++;
     state.applyReviewInFlight = false;
     state.packetReview = null;
+    state.applyReadiness = null;
+    state.applyAttempt = null;
+    state.readinessReq++;
+    state.applyOpenReq++;
     clearPacketReview();
+    resetApplicationReadiness();
     disableJobActionControls();
     var token = ++state.detailReq;
     setFeedback($("#jb-gen-feedback"), null);
@@ -1213,13 +1524,14 @@
     var job = data.job || {};
     state.detailJob = job;
     state.detailPackets = data.packets || [];
+    var pendingCoverReview = pendingCoverReviewFromPackets(state.detailPackets, job);
     $("#jb-detail-empty").hidden = true;
     $("#jb-detail").hidden = false;
 
     $("#jb-detail-title").textContent = job.title || t("jobs.untitled", "Untitled job");
     $("#jb-detail-company").textContent = job.company || t("jobs.company_missing", "Company not detected");
     $("#jb-jd-text").textContent = job.jd_text || "";
-    $("#jb-status-select").value = job.status || "saved";
+    syncStatusSelect(job);
     syncDetailStarButton(job);
 
     var dl = describeDeadline(job.deadline);
@@ -1250,21 +1562,526 @@
     renderLinked("#jb-cvs", data.cvs || [], "cv", t("jobs.empty.cvs", "No tailored CVs yet."));
     renderLinked("#jb-letters", data.cover_letters || [], "cover_letter", t("jobs.empty.letters", "No cover letters yet."));
     clearPacketReview();
+    if (pendingCoverReview) {
+      state.pendingPacket = pendingCoverReview;
+      renderPendingCoverReview(pendingCoverReview);
+    }
+    localizeApplicationStudio($("#jb-detail"));
+    renderApplicationFlow();
+    loadApplicationReadiness();
     if (window.renderIcons) window.renderIcons($("#jb-detail"));
   }
 
   function syncDownstreamJobLinks(job) {
     var id = job && job.id ? String(job.id) : "";
+    var cvId = selectedSourceCv() || requestedSourceCvId() || "";
     var tailor = $("#jb-tailor-link");
     var cover = $("#jb-cover-link");
     if (tailor) {
       tailor.href = id ? "/tailor?job_id=" + encodeURIComponent(id) : "/tailor";
+      if (id && cvId) tailor.href += "&cv_id=" + encodeURIComponent(cvId);
       tailor.setAttribute("aria-label", t("jobs.downstream.tailor_aria", "Run ATS check for this saved job"));
     }
     if (cover) {
       cover.href = id ? "/cover-letters?job_id=" + encodeURIComponent(id) : "/cover-letters";
+      if (id && cvId) cover.href += "&cv_id=" + encodeURIComponent(cvId);
       cover.setAttribute("aria-label", t("jobs.downstream.cover_aria", "Create a cover letter for this saved job"));
     }
+  }
+
+  // ── Application Studio: connected progress + backend readiness ───────────
+  var CONFIRMATION_BLOCKER_CODES = {
+    profile_answers_incomplete: true,
+    legal_answers_unconfirmed: true,
+    visa_answers_unconfirmed: true
+  };
+
+  function packetMatchesSelectedSource(packet) {
+    var cvId = selectedSourceCv();
+    if (!packet || !cvId) return false;
+    return String(packet.source_cv_id || "") === String(cvId);
+  }
+
+  function activePacketForSelectedSource() {
+    var active = (state.detailPackets || []).filter(function (packet) {
+      return packetMatchesSelectedSource(packet) && packet.status !== "archived" && !packet.archived_at;
+    });
+    var reviewedComplete = active.filter(function (packet) {
+      return packet.status === "packet_created" && packet.review_status === "reviewed" &&
+        !!packet.tailored_cv_id && !!packet.cover_letter_id;
+    });
+    return reviewedComplete[0] || active[0] || null;
+  }
+
+  function selectedReadinessPacket() {
+    var packet = state.applyReadiness && state.applyReadiness.packet;
+    return packetMatchesSelectedSource(packet) ? packet : activePacketForSelectedSource();
+  }
+
+  function effectiveReadinessBlockers(data) {
+    var blockers = data && Array.isArray(data.blockers) ? data.blockers.slice() : [];
+    var packet = data && data.packet;
+    if (packet && selectedSourceCv() && !packetMatchesSelectedSource(packet)) {
+      blockers.push({ code: "source_cv_mismatch", message: studioText("source_mismatch") });
+    }
+    if (data && data.config && data.config.available !== true) {
+      blockers.push({ code: "external_apply_unavailable", message: studioText("config_unavailable") });
+    }
+    return blockers;
+  }
+
+  function manualOpenEligibility(data) {
+    if (!data || !data.packet || !packetMatchesSelectedSource(data.packet)) return false;
+    if (String(data.job_id || "") !== String(state.jobId || "")) return false;
+    if (data.packet.job_id && String(data.packet.job_id) !== String(state.jobId || "")) return false;
+    if (!data.target || data.target.open_allowed !== true) return false;
+    if (data.target.method !== "manual_open" || data.target.submit_allowed !== false || data.target.automation_allowed !== false) return false;
+    if (!data.config || data.config.available !== true) return false;
+    if (data.requires_confirmation !== true) return false;
+    var required = Array.isArray(data.required_confirmations) ? data.required_confirmations.slice().sort() : [];
+    var rendered = confirmationInputs().map(function (input) {
+      return input.getAttribute("data-apply-confirmation");
+    }).sort();
+    if (required.length !== rendered.length || required.some(function (name, index) { return name !== rendered[index]; })) return false;
+    var blockers = effectiveReadinessBlockers(data);
+    var confirmationOnly = blockers.length > 0 && blockers.every(function (blocker) {
+      return !!CONFIRMATION_BLOCKER_CODES[blocker.code];
+    });
+    var fullyReady = data.ready === true && blockers.length === 0 && data.actions && data.actions.manual_open === true;
+    var awaitingConfirmations = data.ready === false && confirmationOnly && (!data.actions || data.actions.manual_open !== true);
+    return !!(fullyReady || awaitingConfirmations);
+  }
+
+  function confirmationInputs() {
+    return Array.prototype.slice.call(document.querySelectorAll("[data-apply-confirmation]"));
+  }
+
+  function allManualConfirmationsChecked() {
+    var inputs = confirmationInputs();
+    return inputs.length === 5 && inputs.every(function (input) { return input.checked === true; });
+  }
+
+  function resetManualConfirmationValues() {
+    confirmationInputs().forEach(function (input) { input.checked = false; });
+  }
+
+  function updateManualOpenButton() {
+    var button = $("#jb-apply-open-confirm");
+    var fieldset = $("#jb-apply-confirmations");
+    if (!button) return;
+    var eligible = manualOpenEligibility(state.applyReadiness);
+    if (fieldset) fieldset.disabled = !eligible || state.applyOpenInFlight;
+    button.disabled = !eligible || !allManualConfirmationsChecked() || state.applyOpenInFlight;
+    button.setAttribute("aria-busy", state.applyOpenInFlight ? "true" : "false");
+    var label = button.querySelector(".jb-apply-open-label");
+    if (label) label.textContent = state.applyOpenInFlight ? studioText("confirm_open_busy") : studioText("confirm_open");
+  }
+
+  function formatStudioDate(value) {
+    if (!value) return "—";
+    var parsed = new Date(value);
+    if (isNaN(parsed.getTime())) return String(value);
+    var locale = window.OnePagerI18n && window.OnePagerI18n.getLang
+      ? window.OnePagerI18n.getLang()
+      : "en";
+    return parsed.toLocaleString(locale === "de" ? "de-DE" : "en-GB");
+  }
+
+  function evidenceItem(label, value) {
+    return "<div><dt>" + esc(label) + "</dt><dd><code>" + esc(value == null || value === "" ? "—" : value) + "</code></dd></div>";
+  }
+
+  function attemptEvidenceHtml(attempt) {
+    if (!attempt || typeof attempt !== "object") return "";
+    return '<dl class="jb-evidence-grid jb-attempt-grid">' +
+      evidenceItem(studioText("attempt"), attempt.id) +
+      evidenceItem(studioText("packet"), attempt.packet_id) +
+      evidenceItem(studioText("action"), attempt.action) +
+      evidenceItem(studioText("status"), attempt.status) +
+      evidenceItem(studioText("reason"), attempt.reason_code) +
+      evidenceItem(studioText("target_host"), attempt.target_host) +
+      evidenceItem(studioText("submitted"), attempt.submitted === true ? studioText("yes") : studioText("no")) +
+      evidenceItem(studioText("automated"), attempt.automation_performed === true ? studioText("yes") : studioText("no")) +
+      evidenceItem(studioText("created"), formatStudioDate(attempt.created_at)) +
+    "</dl>";
+  }
+
+  function renderReadinessTarget(data) {
+    var box = $("#jb-readiness-target");
+    if (!box) return;
+    var target = data && data.target;
+    if (!target || !target.host) {
+      box.innerHTML = '<p class="muted">' + esc(studioText("target_missing")) + "</p>";
+      return;
+    }
+    box.innerHTML = '<h4 class="jb-readiness-subhead">' + esc(studioText("target")) + "</h4>" +
+      '<dl class="jb-evidence-grid">' +
+        evidenceItem(studioText("target_host"), target.host) +
+        evidenceItem(studioText("target_classification"), target.classification) +
+        evidenceItem(studioText("target_reason"), target.reason_code) +
+      "</dl>" +
+      '<p class="jb-target-reason muted">' + esc(target.reason || "") + "</p>";
+  }
+
+  function renderReadinessEvidence(data) {
+    var box = $("#jb-readiness-evidence");
+    if (!box) return;
+    var packet = data && data.packet;
+    if (!packet) {
+      box.innerHTML = '<p class="muted">' + esc(studioText("readiness_no_packet")) + "</p>";
+      return;
+    }
+    box.innerHTML = '<h4 class="jb-readiness-subhead">' + esc(studioText("packet_evidence")) + "</h4>" +
+      '<dl class="jb-evidence-grid">' +
+        evidenceItem(studioText("packet"), packet.id) +
+        evidenceItem(studioText("source_cv"), packet.source_cv_id) +
+        evidenceItem(studioText("tailored_cv"), packet.tailored_cv_id) +
+        evidenceItem(studioText("cover_letter"), packet.cover_letter_id) +
+        evidenceItem(studioText("review_status"), packet.review_status) +
+        evidenceItem(studioText("packet_version"), packet.packet_version) +
+        evidenceItem(studioText("prompt_version"), packet.prompt_version) +
+        evidenceItem(studioText("score_system"), packet.score_system_id) +
+        evidenceItem(studioText("updated"), formatStudioDate(packet.updated_at)) +
+      "</dl>";
+  }
+
+  function renderReadinessBlockers(blockers) {
+    var box = $("#jb-readiness-blockers");
+    if (!box) return;
+    if (!blockers.length) {
+      box.innerHTML = "";
+      return;
+    }
+    box.innerHTML = '<h4 class="jb-readiness-subhead">' + esc(studioText("blockers")) + "</h4>" +
+      '<ul class="jb-blocker-list">' + blockers.map(function (blocker) {
+        return '<li data-blocker-code="' + esc(blocker.code || "unknown") + '">' +
+          '<span class="jb-blocker-message">' + esc(blockerText(blocker)) + "</span>" +
+          '<code title="' + esc(studioText("blocker_code")) + '">' + esc(blocker.code || "unknown") + "</code>" +
+        "</li>";
+      }).join("") + "</ul>";
+  }
+
+  function renderApplyAttempts(attempts) {
+    var box = $("#jb-apply-attempts");
+    if (!box) return;
+    var rows = Array.isArray(attempts) ? attempts.slice(0, 3) : [];
+    if (!rows.length) {
+      box.innerHTML = "";
+      return;
+    }
+    box.innerHTML = '<h4 class="jb-readiness-subhead">' + esc(studioText("attempts")) + "</h4>" +
+      '<ol class="jb-attempt-list">' + rows.map(function (attempt) {
+        return '<li data-attempt-status="' + esc(attempt.status || "unknown") + '">' + attemptEvidenceHtml(attempt) + "</li>";
+      }).join("") + "</ol>";
+  }
+
+  function resetApplicationReadiness() {
+    state.applyOpenInFlight = false;
+    var body = $("#jb-readiness-body");
+    var summary = $("#jb-readiness-summary");
+    var refresh = $("#jb-readiness-refresh");
+    if (body) {
+      body.setAttribute("aria-busy", state.jobId ? "true" : "false");
+      body.removeAttribute("data-readiness-state");
+    }
+    if (summary) {
+      summary.className = "jb-readiness-summary muted";
+      summary.textContent = studioText("readiness_loading");
+    }
+    ["#jb-readiness-target", "#jb-readiness-blockers", "#jb-readiness-evidence", "#jb-apply-attempts"].forEach(function (selector) {
+      var node = $(selector);
+      if (node) node.innerHTML = "";
+    });
+    if (refresh) refresh.disabled = !state.jobId;
+    resetManualConfirmationValues();
+    updateManualOpenButton();
+    var link = $("#jb-apply-open-link");
+    if (link) {
+      link.hidden = true;
+      link.setAttribute("href", "#");
+    }
+    var result = $("#jb-apply-result");
+    if (result) {
+      result.hidden = true;
+      result.innerHTML = "";
+    }
+    renderApplicationFlow();
+  }
+
+  function renderApplicationReadiness(data) {
+    var body = $("#jb-readiness-body");
+    var summary = $("#jb-readiness-summary");
+    if (!body || !summary) return;
+    var blockers = effectiveReadinessBlockers(data);
+    var operationalReady = !!(data && data.ready && packetMatchesSelectedSource(data.packet) && data.config && data.config.available === true);
+    body.setAttribute("aria-busy", "false");
+    body.setAttribute("data-readiness-state", operationalReady ? "ready" : "blocked");
+    summary.className = "jb-readiness-summary " + (operationalReady ? "is-ready" : "is-blocked");
+    summary.textContent = operationalReady
+      ? studioText("readiness_ready")
+      : (data && data.ready && data.config && data.config.available !== true
+        ? studioText("readiness_config_blocked")
+        : studioText("readiness_blocked"));
+    renderReadinessTarget(data);
+    renderReadinessBlockers(blockers);
+    renderReadinessEvidence(data);
+    renderApplyAttempts(data && data.attempts);
+    updateManualOpenButton();
+    renderApplicationFlow();
+  }
+
+  function renderApplicationReadinessError(message) {
+    var body = $("#jb-readiness-body");
+    var summary = $("#jb-readiness-summary");
+    if (body) {
+      body.setAttribute("aria-busy", "false");
+      body.setAttribute("data-readiness-state", "error");
+    }
+    if (summary) {
+      summary.className = "jb-readiness-summary is-blocked";
+      summary.textContent = message || studioText("readiness_error");
+    }
+    renderReadinessTarget(null);
+    renderReadinessBlockers([]);
+    renderReadinessEvidence(null);
+    renderApplyAttempts([]);
+    updateManualOpenButton();
+    renderApplicationFlow();
+  }
+
+  function clearManualOpenLink() {
+    var link = $("#jb-apply-open-link");
+    if (!link) return;
+    link.hidden = true;
+    link.setAttribute("href", "#");
+  }
+
+  function readinessMatchesAcceptedHandoff(data, evidence) {
+    if (!data || !evidence || data.ready !== true) return false;
+    var packet = data.packet || {};
+    var target = data.target || {};
+    return String(data.job_id || "") === String(evidence.jobId || "") &&
+      String(packet.id || "") === String(evidence.packetId || "") &&
+      String(packet.packet_version || "") === String(evidence.packetVersion || "") &&
+      String(packet.cover_letter_review_id || "") === String(evidence.reviewId || "") &&
+      normalizedManualOpenUrl(target.url) === evidence.targetUrl &&
+      String(target.host || "").toLowerCase() === evidence.targetHost &&
+      String(target.classification || "") === evidence.targetClassification &&
+      !!(data.config && data.config.available === true);
+  }
+
+  function loadApplicationReadiness(options) {
+    if (!state.jobId) return Promise.resolve(false);
+    options = options || {};
+    var preserveManualOpenLink = options.preserveManualOpenLink === true;
+    var acceptedEvidence = options.acceptedEvidence || null;
+    // Every refresh invalidates prior attestations. The user must confirm the
+    // exact readiness evidence currently on screen, not a previous snapshot.
+    resetManualConfirmationValues();
+    if (!preserveManualOpenLink) clearManualOpenLink();
+    updateManualOpenButton();
+    var jid = state.jobId;
+    var navToken = state.navReq;
+    var token = ++state.readinessReq;
+    var body = $("#jb-readiness-body");
+    var summary = $("#jb-readiness-summary");
+    var refresh = $("#jb-readiness-refresh");
+    if (body) body.setAttribute("aria-busy", "true");
+    if (summary) {
+      summary.className = "jb-readiness-summary muted";
+      summary.textContent = studioText("readiness_loading");
+    }
+    if (refresh) {
+      refresh.disabled = true;
+      var refreshLabel = refresh.querySelector("span:last-child");
+      if (refreshLabel) refreshLabel.textContent = studioText("refresh_busy");
+    }
+    var matchingPacket = activePacketForSelectedSource();
+    var url = "/api/jobs/" + encodeURIComponent(jid) + "/apply/readiness";
+    if (matchingPacket && matchingPacket.id) url += "?packet_id=" + encodeURIComponent(matchingPacket.id);
+    return jsonFetch(url).then(function (res) {
+      if (token !== state.readinessReq || navToken !== state.navReq || state.jobId !== jid) return false;
+      if (res.status !== 200) {
+        if (preserveManualOpenLink) clearManualOpenLink();
+        state.applyReadiness = null;
+        renderApplicationReadinessError((res.body && (res.body.error || res.body.code)) || studioText("readiness_error"));
+        return false;
+      }
+      state.applyReadiness = res.body || {};
+      if (preserveManualOpenLink && !readinessMatchesAcceptedHandoff(state.applyReadiness, acceptedEvidence)) {
+        clearManualOpenLink();
+      }
+      renderApplicationReadiness(state.applyReadiness);
+      return true;
+    }).catch(function () {
+      if (token !== state.readinessReq || navToken !== state.navReq || state.jobId !== jid) return false;
+      if (preserveManualOpenLink) clearManualOpenLink();
+      state.applyReadiness = null;
+      renderApplicationReadinessError(studioText("readiness_error"));
+      return false;
+    }).finally(function () {
+      if (token !== state.readinessReq || navToken !== state.navReq || state.jobId !== jid) return;
+      if (refresh) {
+        refresh.disabled = false;
+        var refreshLabel = refresh.querySelector("span:last-child");
+        if (refreshLabel) refreshLabel.textContent = studioText("refresh");
+      }
+    });
+  }
+
+  function renderApplicationFlow() {
+    var flow = $("#jb-application-flow");
+    if (!flow) return;
+    var sourceSelected = !!selectedSourceCv();
+    var packet = selectedReadinessPacket();
+    var packetComplete = !!(packet && packet.tailored_cv_id && packet.cover_letter_id);
+    var ready = !!(state.applyReadiness && state.applyReadiness.ready && packetMatchesSelectedSource(state.applyReadiness.packet) && state.applyReadiness.config && state.applyReadiness.config.available === true);
+    var currentIndex = !state.jobId ? 0 : !sourceSelected ? 1 : (!packetComplete ? 2 : 4);
+    if (packetComplete && !ready) currentIndex = 4;
+    var blockedReady = packetComplete && !!state.applyReadiness && !ready;
+    var completedThrough = ready ? 4 : currentIndex - 1;
+    Array.prototype.slice.call(flow.querySelectorAll("[data-flow-stage]")).forEach(function (node, index) {
+      var flowState = index <= completedThrough ? "complete" : (index === currentIndex ? "current" : "pending");
+      if (index === 4 && blockedReady) flowState = "blocked";
+      node.setAttribute("data-flow-state", flowState);
+      if (flowState === "current" || flowState === "blocked") node.setAttribute("aria-current", "step");
+      else node.removeAttribute("aria-current");
+      var labelNode = node.querySelector("[data-jb-copy]");
+      var label = labelNode ? studioText(labelNode.getAttribute("data-jb-copy")) : "";
+      node.setAttribute("aria-label", label + ": " + studioText("flow_" + flowState));
+    });
+  }
+
+  function manualConfirmationPayload() {
+    var payload = {};
+    confirmationInputs().forEach(function (input) {
+      payload[input.getAttribute("data-apply-confirmation")] = input.checked === true;
+    });
+    var packet = state.applyReadiness && state.applyReadiness.packet;
+    if (packet && packet.id) payload.packet_id = packet.id;
+    return payload;
+  }
+
+  function renderManualOpenResult(kind, message, body) {
+    var box = $("#jb-apply-result");
+    if (!box) return;
+    box.hidden = false;
+    box.className = "jb-apply-result cl-feedback cl-feedback-" + kind;
+    var attempt = body && body.attempt;
+    var blockers = body && Array.isArray(body.blockers) ? body.blockers : [];
+    box.innerHTML = "<strong>" + esc(message) + "</strong>" +
+      (blockers.length ? '<ul class="jb-blocker-list">' + blockers.map(function (blocker) {
+        return "<li><span>" + esc(blockerText(blocker)) + "</span><code>" + esc(blocker.code || "unknown") + "</code></li>";
+      }).join("") + "</ul>" : "") +
+      attemptEvidenceHtml(attempt);
+  }
+
+  function normalizedManualOpenUrl(value) {
+    try {
+      var parsed = new URL(value);
+      if ((parsed.protocol !== "https:" && parsed.protocol !== "http:") || parsed.username || parsed.password || parsed.search || parsed.hash) return "";
+      return parsed.href;
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function safeManualOpenUrl(body, readiness) {
+    if (!body || !body.open_url || !body.target || body.target.open_allowed !== true) return "";
+    if (body.target.method !== "manual_open" || body.target.submit_allowed !== false || body.target.automation_allowed !== false) return "";
+    var openUrl = normalizedManualOpenUrl(body.open_url);
+    var responseTargetUrl = normalizedManualOpenUrl(body.target.url);
+    var expectedTargetUrl = normalizedManualOpenUrl(readiness && readiness.target && readiness.target.url);
+    if (!openUrl || openUrl !== responseTargetUrl || openUrl !== expectedTargetUrl) return "";
+    var parsed = new URL(openUrl);
+    if (String(body.target.host || "").toLowerCase() !== parsed.hostname.toLowerCase()) return "";
+    if (String(body.target.host || "").toLowerCase() !== String(readiness.target.host || "").toLowerCase()) return "";
+    if (String(body.target.classification || "") !== String(readiness.target.classification || "")) return "";
+    return openUrl;
+  }
+
+  function validManualOpenEvidence(res, body, readiness, openUrl) {
+    var packet = body && body.packet;
+    var expectedPacket = readiness && readiness.packet;
+    var attempt = body && body.attempt;
+    var target = body && body.target;
+    return !!(
+      res.status === 202 && body.status === "manual_open_ready" &&
+      body.submitted === false && body.automation_performed === false && openUrl &&
+      packet && expectedPacket && packet.id === expectedPacket.id &&
+      packet.job_id === state.jobId && packet.source_cv_id === selectedSourceCv() &&
+      attempt && attempt.id && attempt.job_id === state.jobId && attempt.packet_id === expectedPacket.id &&
+      attempt.action === "manual_open" && attempt.status === "manual_open_ready" &&
+      attempt.submitted === false && attempt.automation_performed === false &&
+      target && attempt.target_host === target.host && attempt.target_classification === target.classification
+    );
+  }
+
+  function confirmManualOpen() {
+    if (!state.jobId || state.applyOpenInFlight) return;
+    if (!manualOpenEligibility(state.applyReadiness) || !allManualConfirmationsChecked()) {
+      renderManualOpenResult("error", studioText("confirmation_needed"), null);
+      var firstUnchecked = confirmationInputs().filter(function (input) { return !input.checked; })[0];
+      if (firstUnchecked) firstUnchecked.focus();
+      return;
+    }
+    var jid = state.jobId;
+    var navToken = state.navReq;
+    var token = ++state.applyOpenReq;
+    var payload = manualConfirmationPayload();
+    var readinessSnapshot = state.applyReadiness;
+    var link = $("#jb-apply-open-link");
+    clearManualOpenLink();
+    state.applyOpenInFlight = true;
+    updateManualOpenButton();
+    jsonFetch("/api/jobs/" + encodeURIComponent(jid) + "/apply/open", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    }).then(function (res) {
+      if (token !== state.applyOpenReq || navToken !== state.navReq || state.jobId !== jid) return;
+      var body = res.body || {};
+      var openUrl = safeManualOpenUrl(body, readinessSnapshot);
+      var successfulEvidence = validManualOpenEvidence(res, body, readinessSnapshot, openUrl);
+      if (!successfulEvidence) {
+        var invalidAcceptedResponse = res.status === 202;
+        renderManualOpenResult(
+          "error",
+          invalidAcceptedResponse ? studioText("attempt_invalid") : (body.error || studioText("attempt_blocked")),
+          invalidAcceptedResponse ? null : body
+        );
+        loadApplicationReadiness();
+        return;
+      }
+      state.applyAttempt = body.attempt;
+      renderManualOpenResult("ok", studioText("attempt_ready"), body);
+      if (link && openUrl) {
+        link.setAttribute("href", openUrl);
+        link.hidden = false;
+        if (window.renderIcons) window.renderIcons(link);
+        link.focus();
+      }
+      resetManualConfirmationValues();
+      loadApplicationReadiness({
+        preserveManualOpenLink: true,
+        acceptedEvidence: {
+          jobId: jid,
+          packetId: body.packet && body.packet.id,
+          packetVersion: body.packet && body.packet.packet_version,
+          reviewId: body.packet && body.packet.cover_letter_review_id,
+          targetUrl: normalizedManualOpenUrl(openUrl),
+          targetHost: String(body.target && body.target.host || "").toLowerCase(),
+          targetClassification: String(body.target && body.target.classification || ""),
+        }
+      });
+    }).catch(function () {
+      if (token !== state.applyOpenReq || navToken !== state.navReq || state.jobId !== jid) return;
+      renderManualOpenResult("error", studioText("attempt_blocked"), null);
+    }).finally(function () {
+      if (token !== state.applyOpenReq || navToken !== state.navReq || state.jobId !== jid) return;
+      state.applyOpenInFlight = false;
+      updateManualOpenButton();
+    });
   }
 
   function syncDetailStarButton(job) {
@@ -1383,7 +2200,8 @@
     var storedStatus = String(packet.stored_status || status || "").toLowerCase();
     if (packet.archived_at || status === "archived") return "archived";
     if (status === "stale") return "stale";
-    if (status === "applied_external" || (job && job.status === "applied")) return "applied_external";
+    // Job lifecycle and packet evidence are separate. A user marking the job
+    // "applied" is not proof that this packet was opened or submitted.
     if ((packet.packet_version || 1) > 1 && status === "packet_created") return "regenerated";
     if (status === "packet_created") return "packet_created";
     if (storedStatus === "review_applied") return "review_applied";
@@ -1399,11 +2217,25 @@
     var version = packet && packet.packet_version ? " v" + packet.packet_version : "";
     if (stateName === "archived") return t("jobs.packet.archived", "Archived packet") + version;
     if (stateName === "stale") return t("jobs.packet.stale", "Stale packet") + version;
-    if (stateName === "applied_external") return t("jobs.packet.applied_external", "Applied externally") + version;
     if (stateName === "review_applied") return t("jobs.packet.incomplete", "Incomplete packet") + version;
     if (stateName === "regenerated") return t("jobs.packet.packet", "Packet") + version;
     if (stateName === "packet_created") return t("jobs.packet.packet", "Packet") + version;
     return stateName ? stateName.replace(/_/g, " ") + version : "";
+  }
+
+  function pendingCoverReviewFromPackets(packets, job) {
+    var rows = Array.isArray(packets) ? packets : [];
+    var packet = rows.filter(function (row) {
+      return row && packetStateName(row, job) === "review_applied" &&
+        row.cover_letter_review_status !== "confirmed" &&
+        !!row.cover_letter_review_id &&
+        !!row.id && !!row.cover_letter_id && !!row.cover_letter_hash;
+    })[0];
+    if (!packet) return null;
+    return Object.assign({}, packet, {
+      packet_id: packet.id,
+      requires_cover_letter_review: true,
+    });
   }
 
   function renderPacketState(packets, job) {
@@ -1458,14 +2290,22 @@
     if (grounding) grounding.innerHTML = "";
     if (approve) approve.checked = false;
     if (coverPanel) coverPanel.hidden = true;
+    renderApplicationFlow();
   }
 
   function resetPacketReviewButton() {
     var review = $("#jb-review");
-    if (!review) return;
-    review.disabled = false;
-    var reviewLabel = review.querySelector(".jb-review-label");
-    if (reviewLabel) reviewLabel.textContent = t("jobs.review.first", "Review first");
+    var generateBtn = $("#jb-generate");
+    if (review) {
+      review.disabled = false;
+      var reviewLabel = review.querySelector(".jb-review-label");
+      if (reviewLabel) reviewLabel.textContent = t("jobs.review.first", "Review first");
+    }
+    if (generateBtn) {
+      generateBtn.disabled = !selectedSourceCv();
+      var generateLabel = generateBtn.querySelector(".jb-generate-label");
+      if (generateLabel) generateLabel.textContent = studioText("build_application");
+    }
   }
 
   function resetJobActionControls() {
@@ -1482,9 +2322,15 @@
     if (apply) {
       apply.disabled = false;
       var applyLabel = apply.querySelector(".jb-apply-label");
-      if (applyLabel) applyLabel.textContent = t("jobs.packet.create", "Create packet");
+      if (applyLabel) applyLabel.textContent = state.pendingPacket
+        ? t("jobs.packet.confirm_review", "Confirm review")
+        : t("jobs.packet.create", "Create packet");
     }
-    if (generateBtn && selectedSourceCv()) generateBtn.disabled = false;
+    if (generateBtn) {
+      generateBtn.disabled = !selectedSourceCv();
+      var generateLabel = generateBtn.querySelector(".jb-generate-label");
+      if (generateLabel) generateLabel.textContent = studioText("build_application");
+    }
     document.querySelectorAll(".jb-packet-action").forEach(function (node) { node.disabled = false; });
   }
 
@@ -1522,6 +2368,7 @@
     diff.textContent = (d.lines || []).join("\n") || t("jobs.review.no_diff", "No diff returned.");
     renderReviewLineage(review);
     panel.hidden = false;
+    renderApplicationFlow();
     if (window.renderIcons) window.renderIcons(panel);
   }
 
@@ -1578,7 +2425,7 @@
     if (panel) panel.hidden = false;
     if (grounding) {
       var link = letterId
-        ? ' <a class="jb-linked-open" href="/cover-letters?id=' + encodeURIComponent(letterId) + '">' + esc(t("jobs.packet.open_cover", "Open cover letter")) + "</a>"
+        ? ' <a class="jb-linked-open" href="' + esc(linkedDocumentHref("cover_letter", letterId, packet)) + '">' + esc(t("jobs.packet.open_cover", "Open cover letter")) + "</a>"
         : "";
       grounding.innerHTML =
         '<span class="jb-cover-grounding-evidence">' +
@@ -1592,6 +2439,22 @@
       var label = btn.querySelector(".jb-apply-label");
       if (label) label.textContent = t("jobs.packet.confirm_review", "Confirm review");
     }
+    renderApplicationFlow();
+  }
+
+  function linkedDocumentHref(kind, docId, packet) {
+    var path = kind === "cv" ? "/app" : "/cover-letters";
+    var params = new URLSearchParams();
+    var jobId = (packet && packet.job_id) || state.jobId;
+    var sourceCvId = packet && packet.source_cv_id;
+    var cvId = kind === "cv"
+      ? docId
+      : ((packet && packet.tailored_cv_id) || sourceCvId || selectedSourceCv());
+    params.set("id", docId);
+    if (UUID_RE.test(jobId || "")) params.set("job_id", jobId);
+    if (UUID_RE.test(cvId || "")) params.set("cv_id", cvId);
+    if (UUID_RE.test(sourceCvId || "")) params.set("source_cv_id", sourceCvId);
+    return path + "?" + params.toString();
   }
 
   function renderLinked(sel, items, kind, emptyMsg) {
@@ -1633,7 +2496,7 @@
       var open = document.createElement("a");
       open.className = "cl-list-open jb-linked-open";
       // CVs open in the editor; cover letters open on the cover-letters page.
-      open.href = (kind === "cv" ? "/app?id=" : "/cover-letters?id=") + encodeURIComponent(doc.id);
+      open.href = linkedDocumentHref(kind, doc.id, packet);
       var badgeLabel = kind === "cv" ? t("lib.badge.cv", "CV") : t("lib.badge.cover", "Cover letter");
       var badgeClass = kind === "cv" ? "cl-badge cl-badge-cv" : "cl-badge cl-badge-cover";
       open.innerHTML =
@@ -1817,14 +2680,24 @@
 
   function changeStatus() {
     if (!state.jobId) return;
+    var select = $("#jb-status-select");
+    if (state.statusInFlight) {
+      if (select && state.detailJob) syncStatusSelect(state.detailJob);
+      return;
+    }
     var jid = state.jobId;
     var token = ++state.statusReq;
-    var select = $("#jb-status-select");
     var current = state.jobs.find(function (j) { return j.id === jid; });
     var previous = (current && current.status) || (state.detailJob && state.detailJob.id === jid && state.detailJob.status) || "saved";
     var next = select.value;
+    var request = { token: token, jobId: jid, previous: previous, next: next };
+    state.statusInFlight = request;
+    select.disabled = true;
+    select.setAttribute("aria-busy", "true");
     function restoreStatusSelect() {
-      if (token === state.statusReq && state.jobId === jid && select) select.value = previous;
+      if (state.statusInFlight === request && state.jobId === jid && select) {
+        syncStatusSelect({ status: previous });
+      }
     }
     jsonFetch("/api/jobs/" + encodeURIComponent(jid) + "/status", {
       method: "POST",
@@ -1832,7 +2705,7 @@
       body: JSON.stringify({ status: next })
     })
       .then(function (res) {
-        if (token !== state.statusReq) return;
+        if (state.statusInFlight !== request) return;
         if (res.status === 200) {
           // Immutable-update the cached job + re-render the grid.
           state.jobs = state.jobs.map(function (j) {
@@ -1840,16 +2713,30 @@
           });
           if (state.detailJob && state.detailJob.id === jid) {
             state.detailJob = Object.assign({}, state.detailJob, { status: next });
+            if (state.jobId === jid && select) syncStatusSelect(state.detailJob);
           }
           renderGrid();
         } else {
           restoreStatusSelect();
-          setFeedback($("#jb-gen-feedback"), "error", esc((res.body && res.body.error) || "Couldn't update status."));
+          if (state.jobId === jid) {
+            setFeedback($("#jb-gen-feedback"), "error", esc((res.body && res.body.error) || "Couldn't update status."));
+          }
         }
       })
       .catch(function () {
         restoreStatusSelect();
-        setFeedback($("#jb-gen-feedback"), "error", "Network error updating status.");
+        if (state.jobId === jid) {
+          setFeedback($("#jb-gen-feedback"), "error", "Network error updating status.");
+        }
+      })
+      .finally(function () {
+        if (state.statusInFlight !== request) return;
+        state.statusInFlight = null;
+        if (select) {
+          select.disabled = false;
+          select.setAttribute("aria-busy", "false");
+          if (state.detailJob) syncStatusSelect(state.detailJob);
+        }
       });
   }
 
@@ -1928,7 +2815,7 @@
 
   function deleteJob() {
     if (!state.jobId) return;
-    if (!window.confirm(t("jobs.delete_confirm", "Delete this job? Your tailored CVs and letters are kept, just unlinked."))) return;
+    if (!window.confirm(t("jobs.delete_confirm", "Delete this unused job? Jobs with application history are protected; mark those closed instead."))) return;
     var gone = state.jobId;
     jsonFetch("/api/jobs/" + encodeURIComponent(gone), { method: "DELETE" })
       .then(function (res) {
@@ -1956,12 +2843,14 @@
       setFeedback($("#jb-gen-feedback"), "error", t("jobs.generate.no_cv", "Add a CV first, then pick it as the source."));
       return;
     }
-    var btn = $("#jb-review");
+    var btn = $("#jb-generate");
+    var reviewCompat = $("#jb-review");
     var jid = state.jobId;
     var navToken = state.navReq;
     var token = ++state.packetReq;
     btn.disabled = true;
-    btn.querySelector(".jb-review-label").textContent = t("jobs.review.busy", "Reviewing…");
+    if (reviewCompat) reviewCompat.disabled = true;
+    btn.querySelector(".jb-generate-label").textContent = studioText("build_busy");
     clearPacketReview();
     setFeedback($("#jb-gen-feedback"), "info", t("jobs.review.preparing", "Preparing a reviewed CV copy. Nothing is saved until you apply it."));
     jsonFetch("/api/jobs/" + encodeURIComponent(jid) + "/review", {
@@ -1993,7 +2882,8 @@
       .finally(function () {
         if (token === state.packetReq && navToken === state.navReq && state.jobId === jid) {
           btn.disabled = false;
-          btn.querySelector(".jb-review-label").textContent = t("jobs.review.first", "Review first");
+          if (reviewCompat) reviewCompat.disabled = false;
+          btn.querySelector(".jb-generate-label").textContent = studioText("build_application");
         }
       });
   }
@@ -2198,9 +3088,8 @@
     P.register({
       id: "jobs-generate-packet",
       group: "actions",
-      labelKey: "palette.jobs.generate",
-      label: "Generate reviewed packet",
-      aliases: ["generate", "tailor", "cover letter", "packet"],
+      label: studioText("build_application"),
+      aliases: ["build application", "generate", "tailor", "cover letter", "packet"],
       icon: "sparkles",
       run: generate,
       available: function () { return !!state.jobId && !!$("#jb-generate"); }
@@ -2221,11 +3110,24 @@
     $("#jb-review").addEventListener("click", prepareReview);
     $("#jb-apply-review").addEventListener("click", applyPacketReview);
     $("#jb-packet-state").addEventListener("click", onPacketAction);
+    $("#jb-readiness-refresh").addEventListener("click", loadApplicationReadiness);
+    $("#jb-apply-open-confirm").addEventListener("click", confirmManualOpen);
+    confirmationInputs().forEach(function (input) {
+      input.addEventListener("change", updateManualOpenButton);
+    });
     $("#jb-status-select").addEventListener("change", changeStatus);
     $("#jb-source-cv").addEventListener("change", function () {
       state.packetReq++;
+      state.readinessReq++;
+      state.applyOpenReq++;
+      state.applyReadiness = null;
+      state.applyAttempt = null;
       clearPacketReview();
       resetPacketReviewButton();
+      syncSourceCvUrl(selectedSourceCv());
+      syncDownstreamJobLinks(state.detailJob);
+      resetApplicationReadiness();
+      if (state.jobId) loadApplicationReadiness();
       setFeedback($("#jb-gen-feedback"), null);
     });
     $("#jb-grid").addEventListener("click", onGridClick);
@@ -2244,6 +3146,7 @@
     document.querySelectorAll(".jb-chip").forEach(function (chip) {
       chip.addEventListener("click", function () { setFilter(chip.dataset.filter, chip); });
     });
+    localizeApplicationStudio(document);
     if (window.renderIcons) window.renderIcons(document);
     applyJobSourceDefaults();
     registerPaletteActions();
@@ -2253,6 +3156,7 @@
     // deadline pills, buttons, empty states) localise live too.
     if (window.OnePagerI18n) {
       window.OnePagerI18n.init($(".cl-topbar-right"), function () {
+        localizeApplicationStudio(document);
         renderGrid();
         if (state.jobId) openJob(state.jobId);
       });
@@ -2261,8 +3165,7 @@
     if (window.OnePagerAuth && window.OnePagerAuth.ready) {
       window.OnePagerAuth.ready.then(function () {
         loadCredit();
-        loadCvs();
-        loadJobs().then(function () {
+        Promise.all([loadCvs(), loadJobs()]).then(function () {
           applyJobSourceDefaults();
           var id = requestedJobId();
           if (id) openJob(id);

@@ -337,8 +337,8 @@ def test_deploy_audit_toolchain_uses_hashed_lock_and_rollback_health_check():
     assert "pip-audit==2.10.1" in _read("requirements-audit.lock")
     assert "numpy==2.5.1" in _read("requirements-browser.in")
     assert "numpy==2.5.1" in _read("requirements-browser.lock")
-    assert "playwright==1.58.0" in _read("requirements-browser.in")
-    assert "playwright==1.58.0" in _read("requirements-browser.lock")
+    assert "playwright==1.61.0" in _read("requirements-browser.in")
+    assert "playwright==1.61.0" in _read("requirements-browser.lock")
     assert "node --check" in workflow
     assert "ruff check engine tools tests" in workflow
     assert "bandit -q -lll -r engine tools" in workflow

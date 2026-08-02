@@ -192,6 +192,115 @@
   gap: 7px;
   flex-wrap: wrap;
 }
+.application-studio-head {
+  flex-wrap: wrap;
+}
+.application-studio-head > div:first-child {
+  min-width: min(320px, 100%);
+  flex: 1 1 420px;
+}
+.application-lifecycle {
+  flex: 1 0 100%;
+  min-width: 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-faint, var(--border));
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.application-lifecycle ol {
+  display: flex;
+  align-items: stretch;
+  min-width: 680px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.application-lifecycle li {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+}
+.application-lifecycle li:not(:last-child)::after {
+  content: "\2192";
+  position: absolute;
+  z-index: 2;
+  inset-block-start: 50%;
+  /* Keep the connector inside the step's box. A negative inset makes every
+     list item report horizontal overflow even though the lifecycle rail owns
+     the intentional scroll area. */
+  inset-inline-end: 2px;
+  color: var(--text-faint);
+  font-size: 13px;
+  line-height: 1;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+.application-lifecycle li > a,
+.application-lifecycle li > span {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 36px;
+  margin-inline-end: 12px;
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 8px);
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  font-size: 11.5px;
+  font-weight: 650;
+  line-height: 1.2;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.application-lifecycle li > a:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.application-lifecycle li > a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.application-step-number {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill, 999px);
+  background: var(--bg-surface);
+  color: var(--text-faint);
+  font: 700 10px/1 var(--font-mono, ui-monospace, monospace);
+}
+.application-lifecycle li.is-complete > a,
+.application-lifecycle li.is-complete > span {
+  border-color: var(--success);
+}
+.application-lifecycle li.is-complete .application-step-number {
+  border-color: var(--success);
+  background: var(--success-soft, var(--bg-surface));
+  color: var(--success);
+}
+.application-lifecycle li.is-current > a,
+.application-lifecycle li.is-current > span {
+  border-color: var(--accent);
+  background: var(--accent-mist, var(--accent-soft));
+  color: var(--text);
+}
+.application-lifecycle li.is-current .application-step-number {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-fg, #fff);
+}
+.application-lifecycle-context {
+  min-height: 16px;
+  margin: 7px 0 0;
+  font-size: 11.5px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
 .tool-badge {
   display: inline-flex;
   align-items: center;
@@ -610,13 +719,94 @@
   background: #fff;
 }
 .cl-result-foot { margin-top: 10px; font-size: 12px; text-align: right; }
+.cl-envelope {
+  flex: 0 0 auto;
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg, 12px);
+  background: var(--bg-surface);
+}
+.cl-envelope[hidden] { display: none; }
+.cl-envelope summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 42px;
+  padding: 9px 12px;
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 650;
+  cursor: pointer;
+}
+.cl-envelope summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.cl-envelope-summary-hint {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.cl-envelope fieldset {
+  margin: 0;
+  padding: 0 12px 12px;
+  border: 0;
+}
+.cl-letter-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 12px;
+}
+.cl-letter-detail-grid label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.cl-letter-detail-grid .cl-input,
+.cl-letter-detail-grid .cl-textarea {
+  min-height: 38px;
+  margin: 0;
+}
+.cl-envelope-wide { grid-column: 1 / -1; }
+.cl-envelope-attachments {
+  min-height: 76px;
+  resize: vertical;
+}
+.cl-envelope-hint {
+  margin: 0;
+  padding: 0 12px 12px;
+  font-size: 11.5px;
+  line-height: 1.45;
+}
 
 @media (max-width: 840px) {
+  .cl-app {
+    height: 100vh;
+    height: 100dvh;
+    min-height: 0;
+    overflow: hidden;
+  }
   .cl-main {
     display: flex;
     flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+    width: 100%;
+    max-width: 100%;
+    overflow-x: clip;
     overflow-y: auto;
     scroll-padding-block: 12px;
+  }
+  .cl-main > * {
+    min-width: 0;
+    max-width: 100%;
   }
   .cl-pane {
     flex: 0 0 auto;
@@ -637,6 +827,9 @@
   }
   .cl-body {
     min-height: 200px;
+  }
+  .application-lifecycle {
+    padding-inline: 14px;
   }
 }
 
@@ -747,11 +940,31 @@
   .tool-page-head {
     align-items: flex-start;
     flex-direction: column;
+    /* `.application-studio-head` sets `flex-wrap: wrap` so the lifecycle rail
+       drops onto its own ROW on desktop. Once this container is a column, that
+       same wrap opens a second flex COLUMN beside the title and the rail is
+       laid out off-canvas, where `.cl-main`'s overflow clip silently hides it.
+       A vertical stack must never wrap. */
+    flex-wrap: nowrap;
     gap: 10px;
     padding: 12px 14px;
   }
   .tool-page-title { font-size: 17px; }
   .tool-page-status { justify-content: flex-start; }
+  /* Both head children carry row-axis flex sizing (`1 1 420px` and `1 0 100%`).
+     Flex basis always follows the main axis, so in column direction those
+     become HEIGHTS and inflate the header to ~561px on a 390px phone. Pin both
+     back to their content height; the rail keeps its own horizontal scroll. */
+  .application-studio-head > div:first-child {
+    min-width: 0;
+    flex: 0 0 auto;
+    width: 100%;
+  }
+  .application-lifecycle {
+    flex: 0 0 auto;
+    width: calc(100% + 28px);
+    margin-inline: -14px;
+  }
   .cl-pane { padding: 18px 14px; }
   .cl-primary-actions,
   .jb-primary-actions,
@@ -761,6 +974,13 @@
     padding-bottom: 2px;
     padding-bottom: max(10px, env(safe-area-inset-bottom));
   }
+}
+
+@media (max-width: 560px) {
+  .cl-letter-detail-grid { grid-template-columns: 1fr; }
+  .cl-envelope-wide { grid-column: 1; }
+  .cl-envelope summary { align-items: flex-start; flex-direction: column; gap: 2px; }
+  .cl-envelope-summary-hint { white-space: normal; }
 }
 
 .cl-job-warning { color: var(--danger); margin: 4px 0 10px; }

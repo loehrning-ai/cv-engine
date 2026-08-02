@@ -7,8 +7,7 @@ Each class maps to one QA-verified finding and pins the fixed behavior:
   2. ``None`` in cover-letter attachments is dropped, never stringified into
      "Enclosures: CV, None".
   3. /api/cover-letter/generate caps tone/recipient/company_context (413) and
-     strips bidi/zero-width control chars at the route boundary (the same
-     sanitization jd.py applies to the JD text).
+     rejects bidi/zero-width control chars at the route boundary.
   4. The cover-letter word cap counts each CJK codepoint as one word — a
      10,000-char CJK letter no longer passes the 450-word ceiling.
   5. Cliché stripping repairs a/an agreement ("a results-driven engineer" →
@@ -205,11 +204,9 @@ class TestGenerateFieldHygiene:
         assert res.status_code == 413
         assert res.get_json()["max_chars"] == 200
 
-    def test_control_chars_stripped_from_recipient(
+    def test_control_chars_rejected_from_recipient(
         self, client, fake_supabase, monkeypatch
     ):
-        import cover_letter_service as cl_service
-
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-operator-XXXXXXXXXXXXXXXXXXXXXXXX")
         _mock_llm(monkeypatch, CLEAN_LETTER)
         cv_id = _seed_cv(fake_supabase)
@@ -226,14 +223,137 @@ class TestGenerateFieldHygiene:
                 "recipient": "Jane \u202eDoe\u200b",
             },
         )
-        assert res.status_code == 201, res.get_data(as_text=True)
-        row = next(
-            r for r in fake_supabase.tables["documents"] if r.get("type") == "cover_letter"
+        assert res.status_code == 400, res.get_data(as_text=True)
+        assert res.get_json()["code"] == "invalid_cover_envelope_control"
+        assert res.get_json()["field"] == "recipient"
+        assert not [
+            row for row in fake_supabase.tables.get("documents", [])
+            if row.get("type") == "cover_letter"
+        ]
+
+    @pytest.mark.parametrize("field", ["tone", "recipient", "company_context"])
+    def test_non_string_generate_field_is_400(self, client, fake_supabase, field):
+        res = self._post(client, **{field: {"nested": "value"}})
+        assert res.status_code == 400, res.get_data(as_text=True)
+        assert res.get_json()["code"] == "invalid_cover_envelope_type"
+        assert res.get_json()["field"] == field
+
+    def test_parser_derived_role_is_bounded_before_ai_call(self, client, fake_supabase):
+        cv_id = _seed_cv(fake_supabase)
+        res = client.post(
+            "/api/cover-letter/generate",
+            json={"cv_id": cv_id, "jd_text": "Title: " + ("R" * 501)},
         )
-        blob = cl_service.parse_blob(row["yaml_blob"])
-        assert blob["recipient"] == "Jane Doe"
-        assert "\u202e" not in blob["recipient"]
-        assert "\u200b" not in blob["recipient"]
+        assert res.status_code == 413, res.get_data(as_text=True)
+        assert res.get_json()["code"] == "cover_envelope_field_too_large"
+        assert res.get_json()["field"] == "role"
+
+
+class TestCoverEnvelopeIntegrity:
+    @staticmethod
+    def _seed_letter(fake_supabase) -> tuple[str, dict]:
+        import cover_letter_service as cl_service
+
+        doc_id = str(uuid.uuid4())
+        row = {
+            "id": doc_id,
+            "owner_id": FAKE_OWNER,
+            "type": "cover_letter",
+            "name": "Integrity letter",
+            "yaml_blob": cl_service.serialize_blob({"body": "Original body."}),
+            "job_id": None,
+            "deleted_at": None,
+            "updated_at": 1,
+        }
+        fake_supabase.tables.setdefault("documents", []).append(row)
+        return doc_id, row
+
+    @pytest.mark.parametrize(
+        ("field", "max_chars"),
+        [
+            ("recipient", 500),
+            ("company", 500),
+            ("role", 500),
+            ("tone", 200),
+            ("body", 32_000),
+            ("language", 16),
+            ("source_cv_id", 128),
+            ("job_id", 128),
+            ("subject", 500),
+            ("salutation", 500),
+            ("closing", 500),
+        ],
+    )
+    def test_every_persisted_text_field_has_a_hard_limit(self, field, max_chars):
+        import cover_letter_service as cl_service
+
+        with pytest.raises(cl_service.CoverLetterError) as exc_info:
+            cl_service.serialize_blob({field: "x" * (max_chars + 1)})
+        assert exc_info.value.status == 413
+        assert exc_info.value.payload["code"] == "cover_envelope_field_too_large"
+        assert exc_info.value.payload["field"] == field
+        assert exc_info.value.payload["max_chars"] == max_chars
+
+    @pytest.mark.parametrize(
+        ("attachments", "code"),
+        [
+            (["CV"] * 21, "cover_envelope_attachment_count"),
+            (["x" * 201], "cover_envelope_field_too_large"),
+            (["CV", 7], "invalid_cover_envelope_type"),
+            (["CV\nInjected"], "invalid_cover_envelope_control"),
+        ],
+    )
+    def test_attachment_shape_count_and_item_bounds(self, attachments, code):
+        import cover_letter_service as cl_service
+
+        with pytest.raises(cl_service.CoverLetterError) as exc_info:
+            cl_service.serialize_blob({"body": "Body", "attachments": attachments})
+        assert exc_info.value.payload["code"] == code
+        assert exc_info.value.payload["field"] == "attachments"
+
+    def test_serialized_envelope_has_a_utf8_byte_cap(self):
+        import cover_letter_service as cl_service
+
+        with pytest.raises(cl_service.CoverLetterError) as exc_info:
+            cl_service.serialize_blob({"body": "😀" * 20_000})
+        assert exc_info.value.status == 413
+        assert exc_info.value.payload["code"] == "cover_envelope_too_large"
+        assert exc_info.value.payload["max_bytes"] == 64 * 1024
+
+    def test_update_rejects_control_chars_without_mutating_row(self, client, fake_supabase):
+        doc_id, row = self._seed_letter(fake_supabase)
+        before = row["yaml_blob"]
+        res = client.post(
+            "/api/cover-letter",
+            json={"id": doc_id, "body": "Edited body.", "subject": "Safe\u202eHidden"},
+        )
+        assert res.status_code == 400, res.get_data(as_text=True)
+        assert res.get_json()["code"] == "invalid_cover_envelope_control"
+        assert res.get_json()["field"] == "subject"
+        assert row["yaml_blob"] == before
+
+    def test_update_rejects_invalid_envelope_types(self, client, fake_supabase):
+        doc_id, row = self._seed_letter(fake_supabase)
+        before = row["yaml_blob"]
+        res = client.post(
+            "/api/cover-letter",
+            json={"id": doc_id, "body": "Edited body.", "company": ["Acme"]},
+        )
+        assert res.status_code == 400, res.get_data(as_text=True)
+        assert res.get_json()["code"] == "invalid_cover_envelope_type"
+        assert res.get_json()["field"] == "company"
+        assert row["yaml_blob"] == before
+
+    def test_update_normalizes_newline_attachment_text(self, client, fake_supabase):
+        import cover_letter_service as cl_service
+
+        doc_id, row = self._seed_letter(fake_supabase)
+        res = client.post(
+            "/api/cover-letter",
+            json={"id": doc_id, "body": "Edited body.", "attachments": " CV \n Portfolio "},
+        )
+        assert res.status_code == 200, res.get_data(as_text=True)
+        assert cl_service.parse_blob(row["yaml_blob"])["attachments"] == ["CV", "Portfolio"]
 
 
 # ===========================================================================

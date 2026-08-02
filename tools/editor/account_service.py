@@ -38,7 +38,7 @@ from datetime import datetime, timezone
 import ipaddress
 import re
 import socket
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse, urlunparse
 
 import auth as auth_mod
@@ -73,6 +73,11 @@ _EDITABLE_PROFILE_FIELDS = (
 # Languages the editor ships (EN default + DE). Anything else is rejected so a
 # garbage value can't wedge the UI's language toggle.
 _ALLOWED_LANGUAGES = ("en", "de")
+
+# PostgREST projects commonly cap a response at 1,000 rows. Account exports
+# must keep reading until the final partial page instead of silently truncating
+# a user's portable data at that server-side default.
+ACCOUNT_EXPORT_PAGE_SIZE = 500
 
 
 def _now_iso() -> str:
@@ -622,6 +627,34 @@ def _packet_references_live_documents(row: dict[str, Any], live_doc_ids: set[str
     return True
 
 
+def _paged_export_rows(query_factory: Callable[[], Any]) -> list[dict[str, Any]]:
+    """Read a stable export query through bounded PostgREST range pages.
+
+    Query factories must end their ordering with a column (or column set) that
+    is unique for the caller. Rebuilding the query for each page avoids relying
+    on mutable query-builder state. The fallback preserves compatibility with
+    small in-process stores that do not implement ``range``.
+    """
+    first_query = query_factory()
+    if not callable(getattr(first_query, "range", None)):
+        return first_query.execute().data or []
+
+    rows: list[dict[str, Any]] = []
+    offset = 0
+    while True:
+        query = first_query if offset == 0 else query_factory()
+        page = (
+            query.range(offset, offset + ACCOUNT_EXPORT_PAGE_SIZE - 1)
+            .execute()
+            .data
+            or []
+        )
+        rows.extend(page)
+        if len(page) < ACCOUNT_EXPORT_PAGE_SIZE:
+            return rows
+        offset += ACCOUNT_EXPORT_PAGE_SIZE
+
+
 # ---------------------------------------------------------------------------
 # Structured account export — explicit live-data scope.
 # ---------------------------------------------------------------------------
@@ -656,84 +689,84 @@ def export_account_data() -> dict[str, Any]:
             # demo documents table so the export includes it alongside any
             # created / tailored demo documents.
             local_demo_store.demo_cv_row()
-        documents = (
-            sb.table("documents")
-            .select(
-                "id, type, name, slug, yaml_blob, accent, font, density, "
-                "job_id, created_at, updated_at"
+        documents = _paged_export_rows(
+            lambda: (
+                sb.table("documents")
+                .select(
+                    "id, type, name, slug, yaml_blob, accent, font, density, "
+                    "job_id, created_at, updated_at"
+                )
+                .is_("deleted_at", "null")
+                .order("updated_at", desc=True)
+                .order("id", desc=True)
             )
-            .is_("deleted_at", "null")
-            .order("updated_at", desc=True)
-            .execute()
-            .data
-            or []
         )
         live_doc_ids = {str(row.get("id")) for row in documents if row.get("id")}
 
-        saved_jobs = (
-            sb.table("saved_jobs")
-            .select(
-                "id, title, company, jd_text, jd_json, source_url, status, "
-                "field, deadline, confidence, why_fit, created_at, updated_at, "
-                "import_run_id, source_provider, source_type, source_external_id, "
-                "source_fetched_at, source_metadata, source_country, "
-                "source_region, source_location, remote_mode, salary_text, "
-                "seniority, verification_status, content_hash, experience_requirements, "
-                "last_seen_at, expires_at"
+        saved_jobs = _paged_export_rows(
+            lambda: (
+                sb.table("saved_jobs")
+                .select(
+                    "id, title, company, jd_text, jd_json, source_url, status, "
+                    "field, deadline, confidence, why_fit, created_at, updated_at, "
+                    "import_run_id, source_provider, source_type, source_external_id, "
+                    "source_fetched_at, source_metadata, source_country, "
+                    "source_region, source_location, remote_mode, salary_text, "
+                    "seniority, verification_status, content_hash, experience_requirements, "
+                    "last_seen_at, expires_at"
+                )
+                .order("created_at", desc=True)
+                .order("id", desc=True)
             )
-            .order("created_at", desc=True)
-            .execute()
-            .data
-            or []
         )
         saved_jobs = [_project_saved_job(row) for row in saved_jobs]
 
-        import_runs = (
-            sb.table("job_import_runs")
-            .select(
-                "id, provider, query, location, status, started_at, finished_at, "
-                "requested_limit, imported_count, skipped_count, error, metadata"
+        import_runs = _paged_export_rows(
+            lambda: (
+                sb.table("job_import_runs")
+                .select(
+                    "id, provider, query, location, status, started_at, finished_at, "
+                    "requested_limit, imported_count, skipped_count, error, metadata"
+                )
+                .order("started_at", desc=True)
+                .order("id", desc=True)
             )
-            .order("started_at", desc=True)
-            .execute()
-            .data
-            or []
         )
         import_runs = [_project_import_run(row) for row in import_runs]
 
-        import_results = (
-            sb.table("job_import_results")
-            .select(
-                "id, import_run_id, source_provider, source_type, "
-                "source_external_id, title, company, jd_text, jd_json, "
-                "source_url, source_metadata, source_country, source_region, "
-                "source_location, remote_mode, salary_text, seniority, "
-                "verification_status, content_hash, experience_requirements, last_seen_at, expires_at, "
-                "selected, saved_job_id, created_at, updated_at"
+        import_results = _paged_export_rows(
+            lambda: (
+                sb.table("job_import_results")
+                .select(
+                    "id, import_run_id, source_provider, source_type, "
+                    "source_external_id, title, company, jd_text, jd_json, "
+                    "source_url, source_metadata, source_country, source_region, "
+                    "source_location, remote_mode, salary_text, seniority, "
+                    "verification_status, content_hash, experience_requirements, last_seen_at, expires_at, "
+                    "selected, saved_job_id, created_at, updated_at"
+                )
+                .order("created_at", desc=True)
+                .order("id", desc=True)
             )
-            .order("created_at", desc=True)
-            .execute()
-            .data
-            or []
         )
         import_results = [_project_import_result(row) for row in import_results]
 
-        application_packets = (
-            sb.table("application_packets")
-            .select(
-                "id, job_id, source_cv_id, tailored_cv_id, cover_letter_id, "
-                "status, review_status, provider, model, prompt_version, "
-                "score_system_id, score_snapshot, source_cv_hash, job_content_hash, "
-                "tailored_cv_hash, cover_letter_hash, input_hash, output_hash, "
-                "cover_letter_review_status, cover_letter_review_confirmed_at, cover_letter_review_id, "
-                "packet_version, profile_answers_complete, legal_answers_confirmed, "
-                "visa_answers_confirmed, archived_at, created_at, updated_at"
+        application_packets = _paged_export_rows(
+            lambda: (
+                sb.table("application_packets")
+                .select(
+                    "id, job_id, source_cv_id, tailored_cv_id, cover_letter_id, "
+                    "status, review_status, provider, model, prompt_version, "
+                    "score_system_id, score_snapshot, source_cv_hash, job_content_hash, "
+                    "tailored_cv_hash, cover_letter_hash, input_hash, output_hash, "
+                    "cover_letter_review_status, cover_letter_review_confirmed_at, cover_letter_review_id, "
+                    "packet_version, profile_answers_complete, legal_answers_confirmed, "
+                    "visa_answers_confirmed, archived_at, created_at, updated_at"
+                )
+                .is_("archived_at", "null")
+                .order("updated_at", desc=True)
+                .order("id", desc=True)
             )
-            .is_("archived_at", "null")
-            .order("updated_at", desc=True)
-            .execute()
-            .data
-            or []
         )
         application_packets = [
             _project_application_packet(row)
@@ -746,12 +779,12 @@ def export_account_data() -> dict[str, Any]:
     # columns, but we ALSO project explicitly in Python — defence in depth, so
     # the export can never carry ciphertext/nonce/wrapped_dek/dek_nonce even if
     # the client/query were ever changed to return more. Only the hint survives.
-    key_rows = (
-        sb.table("user_llm_keys")
-        .select("provider, last4, created_at, updated_at")
-        .execute()
-        .data
-        or []
+    key_rows = _paged_export_rows(
+        lambda: (
+            sb.table("user_llm_keys")
+            .select("provider, last4, created_at, updated_at")
+            .order("provider")
+        )
     )
     llm_keys = [
         {
@@ -806,12 +839,26 @@ def request_account_deletion() -> dict[str, Any]:
             ),
         }
     sb = auth_mod.user_supabase()
-    resp = sb.rpc("request_account_deletion", {}).execute()
-    requested_at = resp.data
+    resp = sb.rpc("request_account_deletion_with_artifact_detach", {}).execute()
+    evidence = resp.data
+    if isinstance(evidence, list) and evidence:
+        evidence = evidence[0]
+    if not isinstance(evidence, dict) or evidence.get("status") not in {
+        "requested",
+        "already_requested",
+    }:
+        raise RuntimeError("account deletion transition returned invalid evidence")
+    requested_at = evidence.get("requested_at")
+    artifacts = evidence.get("artifacts") or []
+    if not isinstance(artifacts, list):
+        raise RuntimeError("account deletion artifact evidence is invalid")
     return {
         "deletion_requested": True,
         "requested_at": requested_at,
         "grace_days": 30,
+        "_artifacts": artifacts,
+        "cleanup_pending": bool(artifacts),
+        "invalid_artifact_count": int(evidence.get("invalid_artifact_count") or 0),
         "message": (
             "Your account is scheduled for deletion. Your documents are hidden "
             "immediately. You can cancel for 30 days; after that, the erasure "

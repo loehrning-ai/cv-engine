@@ -42,7 +42,15 @@
 name: deploy
 
 on:
-  workflow_dispatch: {} # manual only — never auto-runs
+  workflow_dispatch: # manual only — never auto-runs
+    inputs:
+      forward_only_maintenance:
+        description: >-
+          Confirm that production ingress and the old app were drained before
+          applying a forward-only schema contract.
+        required: true
+        default: false
+        type: boolean
 
 concurrency:
   group: deploy-production
@@ -90,6 +98,9 @@ jobs:
             | xargs -0 -n1 node --check
           python -m pytest \
             tests/test_account_purge_worker.py \
+            tests/test_pdf_cleanup_worker.py \
+            tests/test_schema_compatibility_probe.py \
+            tests/test_release_schema_contract.py \
             tests/test_container_hardening.py \
             tests/test_hygiene_supplychain.py \
             tests/test_hardening_web.py \
@@ -120,6 +131,8 @@ jobs:
           python tools/ci/live_rls_gate.py
 
       - name: Auth bootstrap browser gate
+        env:
+          ONEPAGER_E2E_RETRY: "0"
         run: |
           . .venv-app/bin/activate
           python -m pip install --disable-pip-version-check --require-hashes -r requirements-browser.lock
@@ -167,7 +180,7 @@ jobs:
           fi
           test "$(
             grep -c 'pull_policy: never' <<<"$release_config"
-          )" = "3"
+          )" = "4"
           test "$(
             sed -n 's/^[[:space:]]*image: //p' <<<"$release_config" \
               | sort -u
@@ -408,6 +421,7 @@ jobs:
 
       - name: Deploy over SSH
         env:
+          FORWARD_ONLY_MAINTENANCE_ACK: ${{ inputs.forward_only_maintenance }}
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
@@ -462,6 +476,10 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
+          case "$FORWARD_ONLY_MAINTENANCE_ACK" in
+            true|false) ;;
+            *) exit 2 ;;
+          esac
           release_archive="release-images/onepager-images.tar"
           release_manifest="release-images/onepager-images.manifest"
           test -s "$release_archive"
@@ -633,29 +651,47 @@ jobs:
             "$release_archive" \
             "$SSH_USER@$SSH_HOST:$remote_images"
           ssh -o StrictHostKeyChecking=yes "$SSH_USER@$SSH_HOST" \
-            "REMOTE_ENV='$remote_env' REMOTE_IMAGES='$remote_images' EXPECTED_IMAGE_ARCHIVE_SHA='$archive_sha' EXPECTED_APP_IMAGE_ID='$expected_app_image_id' EXPECTED_CADDY_IMAGE_ID='$expected_caddy_image_id' bash -s" \
+            "REMOTE_ENV='$remote_env' REMOTE_IMAGES='$remote_images' EXPECTED_IMAGE_ARCHIVE_SHA='$archive_sha' EXPECTED_APP_IMAGE_ID='$expected_app_image_id' EXPECTED_CADDY_IMAGE_ID='$expected_caddy_image_id' FORWARD_ONLY_MAINTENANCE_ACK='$FORWARD_ONLY_MAINTENANCE_ACK' bash -s" \
             <<'REMOTE'
             set -euo pipefail
             umask 077
             APP_DIR="${APP_DIR:-/opt/onepager}"
             NEXT_DIR="${APP_DIR}.next"
             PREV_DIR="${APP_DIR}.previous"
+            SCHEMA_PROBE_ENV="${NEXT_DIR}/.schema-probe.env"
+            PDF_PROBE_ENV="${NEXT_DIR}/.pdf-probe.env"
             SWAP_STARTED=0
             ERASURE_CANDIDATE_READY=0
+            MAINTENANCE_STARTED=0
+            ROLLBACK_SCHEMA_COMPATIBLE=0
             PREVIOUS_APP_IMAGE_ID=""
             PREVIOUS_CADDY_IMAGE_ID=""
+            previous_boundary_was_running=0
+            previous_release_ambiguous=0
             previous_app_container="$(
-              docker ps -q \
+              docker ps -q --latest \
                 --filter 'label=com.docker.compose.project=onepager' \
                 --filter 'label=com.docker.compose.service=app' \
-                | head -n 1
             )"
+            if [ -z "$previous_app_container" ]; then
+              previous_app_container="$(
+                docker ps -aq --latest \
+                  --filter 'label=com.docker.compose.project=onepager' \
+                  --filter 'label=com.docker.compose.service=app' \
+              )"
+            fi
             previous_caddy_container="$(
-              docker ps -q \
+              docker ps -q --latest \
                 --filter 'label=com.docker.compose.project=onepager' \
                 --filter 'label=com.docker.compose.service=caddy' \
-                | head -n 1
             )"
+            if [ -z "$previous_caddy_container" ]; then
+              previous_caddy_container="$(
+                docker ps -aq --latest \
+                  --filter 'label=com.docker.compose.project=onepager' \
+                  --filter 'label=com.docker.compose.service=caddy' \
+              )"
+            fi
             if [ -n "$previous_app_container" ]; then
               PREVIOUS_APP_IMAGE_ID="$(
                 docker inspect --format '{{.Image}}' "$previous_app_container"
@@ -666,6 +702,31 @@ jobs:
                 docker inspect --format '{{.Image}}' "$previous_caddy_container"
               )"
             fi
+            running_app_containers="$(
+              docker ps -q \
+                --filter 'label=com.docker.compose.project=onepager' \
+                --filter 'label=com.docker.compose.service=app'
+            )"
+            for running_app_container in $running_app_containers; do
+              if [ "$(
+                docker inspect --format '{{.Image}}' "$running_app_container"
+              )" != "$PREVIOUS_APP_IMAGE_ID" ]; then
+                previous_release_ambiguous=1
+              fi
+            done
+            running_caddy_containers="$(
+              docker ps -q \
+                --filter 'label=com.docker.compose.project=onepager' \
+                --filter 'label=com.docker.compose.service=caddy'
+            )"
+            for running_caddy_container in $running_caddy_containers; do
+              if [ "$(
+                docker inspect --format '{{.Image}}' "$running_caddy_container"
+              )" != "$PREVIOUS_CADDY_IMAGE_ID" ]; then
+                previous_release_ambiguous=1
+              fi
+            done
+            unset running_app_containers running_caddy_containers
             for prior_image_id in \
               "$PREVIOUS_APP_IMAGE_ID" \
               "$PREVIOUS_CADDY_IMAGE_ID"; do
@@ -714,9 +775,71 @@ jobs:
                 docker inspect --format '{{.Image}}' "$service_id"
               )" = "$expected_image_id"
             }
+            describe_schema_contract() {
+              local image_id="$1"
+              docker run --rm \
+                --network none \
+                --entrypoint python3 \
+                --user 999:999 \
+                --read-only \
+                --cap-drop ALL \
+                --security-opt no-new-privileges \
+                --pids-limit 64 \
+                --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m \
+                "$image_id" \
+                tools/editor/schema_compatibility_probe.py --describe
+            }
+            probe_schema_contract() {
+              local image_id="$1"
+              docker run --rm \
+                --env-file "$SCHEMA_PROBE_ENV" \
+                --entrypoint python3 \
+                --user 999:999 \
+                --read-only \
+                --cap-drop ALL \
+                --security-opt no-new-privileges \
+                --pids-limit 64 \
+                --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m \
+                "$image_id" \
+                tools/editor/schema_compatibility_probe.py --probe
+            }
+            stop_release_boundary() {
+              local container_id
+              local container_ids
+              local service
+              local standalone_name
+              MAINTENANCE_STARTED=1
+              for service in \
+                caddy \
+                app \
+                purge-worker \
+                pdf-cleanup-worker; do
+                container_ids="$(
+                  docker ps -q \
+                    --filter 'label=com.docker.compose.project=onepager' \
+                    --filter "label=com.docker.compose.service=$service"
+                )" || return 1
+                for container_id in $container_ids; do
+                  previous_boundary_was_running=1
+                  docker stop --time 30 "$container_id" >/dev/null || return 1
+                done
+              done
+              for standalone_name in \
+                onepager-erasure-candidate \
+                onepager-erasure-keeper; do
+                container_ids="$(
+                  docker ps -q --filter "name=^/${standalone_name}$"
+                )" || return 1
+                for container_id in $container_ids; do
+                  previous_boundary_was_running=1
+                  docker stop --time 30 "$container_id" >/dev/null || return 1
+                done
+              done
+            }
             verify_stack() {
               assert_release_service_image app "$EXPECTED_APP_IMAGE_ID"
               assert_release_service_image purge-worker "$EXPECTED_APP_IMAGE_ID"
+              assert_release_service_image pdf-cleanup-worker "$EXPECTED_APP_IMAGE_ID"
               assert_release_service_image caddy "$EXPECTED_CADDY_IMAGE_ID"
               curl -fsS "$PUBLIC_BASE_URL/healthz"
               worker_id="$(
@@ -737,6 +860,11 @@ jobs:
               fi
               test -n "$worker_id"
               wait_for_healthy_worker "$worker_id"
+              pdf_worker_id="$(
+                docker compose -p onepager --profile prod ps -q pdf-cleanup-worker
+              )"
+              test -n "$pdf_worker_id"
+              wait_for_healthy_worker "$pdf_worker_id"
             }
             cleanup_and_restore_on_failure() {
               status="$1"
@@ -746,32 +874,58 @@ jobs:
               fi
               rm -f "$REMOTE_ENV" "$REMOTE_IMAGES"
               if [ -d "$NEXT_DIR" ]; then
-                rm -f "$NEXT_DIR/.env" "$NEXT_DIR/.env.docker"
+                rm -f \
+                  "$NEXT_DIR/.env" \
+                  "$NEXT_DIR/.env.docker" \
+                  "$SCHEMA_PROBE_ENV" \
+                  "$PDF_PROBE_ENV"
               fi
               if [ "$status" -ne 0 ] && [ "${SWAP_STARTED:-0}" = "1" ]; then
-                cd /
-                rm -rf "${APP_DIR}.failed"
-                if [ -d "$APP_DIR" ]; then
-                  mv "$APP_DIR" "${APP_DIR}.failed"
+                if ! stop_release_boundary; then
+                  ROLLBACK_SCHEMA_COMPATIBLE=0
                 fi
-                if [ -d "$PREV_DIR" ]; then
-                  mv "$PREV_DIR" "$APP_DIR"
-                  cd "$APP_DIR"
-                  if [ -n "$PREVIOUS_APP_IMAGE_ID" ]; then
-                    docker tag "$PREVIOUS_APP_IMAGE_ID" onepager:dev
-                    export ONEPAGER_APP_IMAGE="$PREVIOUS_APP_IMAGE_ID"
+                docker rm -f \
+                  onepager-erasure-candidate \
+                  onepager-erasure-keeper \
+                  >/dev/null 2>&1 || true
+                if [ "${ROLLBACK_SCHEMA_COMPATIBLE:-0}" = "1" ]; then
+                  cd /
+                  rm -rf "${APP_DIR}.failed"
+                  if [ -d "$APP_DIR" ]; then
+                    mv "$APP_DIR" "${APP_DIR}.failed"
                   fi
-                  if [ -n "$PREVIOUS_CADDY_IMAGE_ID" ]; then
-                    docker tag \
-                      "$PREVIOUS_CADDY_IMAGE_ID" \
-                      onepager-caddy:2.11.4
-                    export ONEPAGER_CADDY_IMAGE="$PREVIOUS_CADDY_IMAGE_ID"
+                  if [ -d "$PREV_DIR" ]; then
+                    mv "$PREV_DIR" "$APP_DIR"
+                    cd "$APP_DIR"
+                    if [ -n "$PREVIOUS_APP_IMAGE_ID" ]; then
+                      docker tag "$PREVIOUS_APP_IMAGE_ID" onepager:dev
+                      export ONEPAGER_APP_IMAGE="$PREVIOUS_APP_IMAGE_ID"
+                    fi
+                    if [ -n "$PREVIOUS_CADDY_IMAGE_ID" ]; then
+                      docker tag \
+                        "$PREVIOUS_CADDY_IMAGE_ID" \
+                        onepager-caddy:2.11.4
+                      export ONEPAGER_CADDY_IMAGE="$PREVIOUS_CADDY_IMAGE_ID"
+                    fi
+                    unset COMPOSE_FILE
+                    docker compose -p onepager --profile prod --env-file .env \
+                      up -d --no-build --pull never --remove-orphans
+                    curl -fsS "$PUBLIC_BASE_URL/healthz"
                   fi
-                  unset COMPOSE_FILE
-                  docker compose -p onepager --profile prod --env-file .env \
-                    up -d --no-build --pull never --remove-orphans
-                  curl -fsS "$PUBLIC_BASE_URL/healthz"
+                else
+                  # The database has crossed a forward-only contract boundary.
+                  # Keep the candidate checkout/image authoritative, keep all
+                  # candidate ingress and workers stopped, and never restart
+                  # the incompatible previous app.
+                  :
                 fi
+              elif [ "$status" -ne 0 ] \
+                && [ "${MAINTENANCE_STARTED:-0}" = "1" ]; then
+                stop_release_boundary || true
+                docker rm -f \
+                  onepager-erasure-candidate \
+                  onepager-erasure-keeper \
+                  >/dev/null 2>&1 || true
               fi
             }
             trap 'status=$?; cleanup_and_restore_on_failure "$status"; exit "$status"' EXIT
@@ -807,14 +961,141 @@ jobs:
             test "$(
               docker compose -p onepager --profile prod --env-file .env config \
                 | grep -c 'pull_policy: never'
-            )" = "3"
+            )" = "4"
             python3 tools/ci/compose_env_to_docker.py \
               "$NEXT_DIR/.env" \
               "$NEXT_DIR/.env.docker"
+            schema_probe_url="$(
+              python3 tools/ci/compose_env_to_docker.py \
+                --get "$NEXT_DIR/.env" SUPABASE_URL
+            )"
+            schema_probe_key="$(
+              python3 tools/ci/compose_env_to_docker.py \
+                --get "$NEXT_DIR/.env" SUPABASE_SERVICE_ROLE_KEY
+            )"
+            test -n "$schema_probe_url"
+            test -n "$schema_probe_key"
+            printf '%s=%s\n' \
+              SUPABASE_URL "$schema_probe_url" \
+              SUPABASE_SERVICE_ROLE_KEY "$schema_probe_key" \
+              > "$SCHEMA_PROBE_ENV"
+            printf '%s=%s\n' \
+              SUPABASE_URL "$schema_probe_url" \
+              SUPABASE_SERVICE_ROLE_KEY "$schema_probe_key" \
+              > "$PDF_PROBE_ENV"
+            pdf_r2_present=0
+            for pdf_probe_key in \
+              R2_ACCOUNT_ID \
+              R2_ACCESS_KEY_ID \
+              R2_SECRET_ACCESS_KEY \
+              R2_BUCKET; do
+              pdf_probe_value="$(
+                python3 tools/ci/compose_env_to_docker.py \
+                  --get "$NEXT_DIR/.env" "$pdf_probe_key"
+              )"
+              if [ -n "$pdf_probe_value" ]; then
+                pdf_r2_present=$((pdf_r2_present + 1))
+                printf '%s=%s\n' \
+                  "$pdf_probe_key" "$pdf_probe_value" \
+                  >> "$PDF_PROBE_ENV"
+              fi
+            done
+            pdf_never_used=0
+            pdf_never_used_value="$(
+              python3 tools/ci/compose_env_to_docker.py \
+                --get "$NEXT_DIR/.env" ONEPAGER_R2_NEVER_USED
+            )"
+            case "$(
+              printf '%s' "$pdf_never_used_value" \
+                | tr '[:upper:]' '[:lower:]'
+            )" in
+              1|true|yes) pdf_never_used=1 ;;
+              "") ;;
+              *)
+                echo "ONEPAGER_R2_NEVER_USED must be truthy or empty" >&2
+                exit 1
+                ;;
+            esac
+            if [ "$pdf_never_used" = "1" ]; then
+              test "$pdf_r2_present" = "0"
+              printf '%s=%s\n' ONEPAGER_R2_NEVER_USED 1 \
+                >> "$PDF_PROBE_ENV"
+            else
+              test "$pdf_r2_present" = "4"
+            fi
+            chmod 600 "$SCHEMA_PROBE_ENV"
+            chmod 600 "$PDF_PROBE_ENV"
+            unset \
+              schema_probe_url \
+              schema_probe_key \
+              pdf_probe_key \
+              pdf_probe_value \
+              pdf_r2_present \
+              pdf_never_used \
+              pdf_never_used_value
             candidate_image="$(
               docker image inspect onepager:dev --format '{{.Id}}'
             )"
             test "$candidate_image" = "$EXPECTED_APP_IMAGE_ID"
+            candidate_schema_contract="$(
+              describe_schema_contract "$EXPECTED_APP_IMAGE_ID"
+            )"
+            [[ "$candidate_schema_contract" =~ ^[a-z0-9._-]+:[0-9a-f]{64}$ ]]
+
+            # Prove the candidate/database contract before stopping any healthy
+            # production container. The probe can read OpenAPI and the
+            # read-only release contract RPC; it cannot mutate tenant state.
+            probe_schema_contract "$EXPECTED_APP_IMAGE_ID"
+
+            previous_schema_contract=""
+            if [ -n "$PREVIOUS_APP_IMAGE_ID" ] \
+              && [ -n "$PREVIOUS_CADDY_IMAGE_ID" ] \
+              && [ "$previous_release_ambiguous" = "0" ]; then
+              previous_schema_contract="$(
+                describe_schema_contract "$PREVIOUS_APP_IMAGE_ID" 2>/dev/null \
+                  || true
+              )"
+              if [ "$previous_schema_contract" = "$candidate_schema_contract" ] \
+                && probe_schema_contract "$PREVIOUS_APP_IMAGE_ID"; then
+                ROLLBACK_SCHEMA_COMPATIBLE=1
+              fi
+            fi
+
+            if [ -n "$PREVIOUS_APP_IMAGE_ID" ] \
+              && [ "$ROLLBACK_SCHEMA_COMPATIBLE" != "1" ]; then
+              # Crossing an image/schema contract is a maintenance boundary.
+              # Stop every process from the old release. A release discovered
+              # still serving or running workers must be rerun after the
+              # operator verifies the drained state.
+              stop_release_boundary
+              if [ "$FORWARD_ONLY_MAINTENANCE_ACK" != "true" ]; then
+                echo "Forward-only schema cutover requires maintenance acknowledgement" >&2
+                exit 1
+              fi
+              if [ "$previous_boundary_was_running" = "1" ]; then
+                echo "Previous release boundary was running; it is now drained. Rerun deployment." >&2
+                exit 1
+              fi
+            fi
+            rm -f "$SCHEMA_PROBE_ENV"
+            # Preflight the exact cleanup authorities from the scanned image
+            # before swapping directories or replacing the live stack. The
+            # R2 mode deletes only a fresh key below the reserved health prefix
+            # and calls the claim RPC with guaranteed-miss UUIDs. Never-used
+            # mode proves that both artifact tables remain empty.
+            docker run --rm \
+              --env-file "$PDF_PROBE_ENV" \
+              --entrypoint python3 \
+              --user 999:999 \
+              --read-only \
+              --cap-drop ALL \
+              --security-opt no-new-privileges \
+              --pids-limit 128 \
+              --init \
+              --tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m \
+              "$EXPECTED_APP_IMAGE_ID" \
+              tools/editor/pdf_cleanup_worker.py --probe
+            rm -f "$PDF_PROBE_ENV"
             docker rm -f onepager-erasure-candidate >/dev/null 2>&1 || true
             docker run -d \
               --name onepager-erasure-candidate \
@@ -844,12 +1125,17 @@ jobs:
             wait_for_healthy_worker "$candidate_id"
             ERASURE_CANDIDATE_READY=1
             cd /
-            SWAP_STARTED=1
             rm -rf "$PREV_DIR"
             if [ -d "$APP_DIR" ]; then
               mv "$APP_DIR" "$PREV_DIR"
             fi
-            mv "$NEXT_DIR" "$APP_DIR"
+            if ! mv "$NEXT_DIR" "$APP_DIR"; then
+              if [ -d "$PREV_DIR" ]; then
+                mv "$PREV_DIR" "$APP_DIR"
+              fi
+              exit 1
+            fi
+            SWAP_STARTED=1
 
             # Bring up the prod stack (app + erasure worker + Caddy) from the clean artifact.
             cd "$APP_DIR"

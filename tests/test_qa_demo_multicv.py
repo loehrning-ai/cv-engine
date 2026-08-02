@@ -142,8 +142,20 @@ class TestDemoMultiCvCrud:
         def _never(*_args, **_kwargs):
             raise AssertionError("demo mutation reached derived PDF storage")
 
-        monkeypatch.setattr(pdf_store, "delete_document_artifacts", _never)
-        monkeypatch.setattr(pdf_store, "delete_owner_artifacts", _never)
+        # Tripwire every pdf_store entry point a demo mutation could actually
+        # reach. `delete_owner_artifacts` used to be pinned here but had no
+        # call sites left, so that half of the guard asserted nothing while
+        # looking like coverage.
+        for entry_point in (
+            "delete_document_artifacts",
+            "delete_detached_artifacts",
+            "delete_owner_cv_artifacts",
+            "retry_pending_artifact_cleanup",
+            "pending_artifact_cleanup_count",
+            "update_document_with_artifact_detach",
+        ):
+            assert hasattr(pdf_store, entry_point), entry_point
+            monkeypatch.setattr(pdf_store, entry_point, _never)
         client, headers = demo_client
         new_id = _create_cv(client, headers)
 
@@ -278,6 +290,74 @@ class TestDemoAccountDeletion:
         cancelled = client.post("/api/account/cancel-delete", headers=headers)
         assert cancelled.status_code == 200, cancelled.get_data(as_text=True)[:200]
         assert cancelled.get_json()["cancelled"] is True
+
+
+class TestDemoCoverLetterRevisionParity:
+    def test_save_uses_cas_preserves_lineage_and_allows_idempotent_retry(
+        self, demo_client, server_module, monkeypatch
+    ):
+        import auth as auth_mod
+        import cover_letter_service as cl_service
+        import local_demo_store
+
+        client, headers = demo_client
+        doc_id = str(uuid.uuid4())
+        initial_revision = "2026-08-01T10:00:00+00:00"
+        local_demo_store.db().tables.setdefault("documents", []).append(
+            {
+                "id": doc_id,
+                "owner_id": auth_mod.LOCAL_DEMO_OWNER_ID,
+                "type": "cover_letter",
+                "name": "Demo letter",
+                "yaml_blob": cl_service.serialize_blob({"body": "Original body."}),
+                "job_id": None,
+                "deleted_at": None,
+                "created_at": initial_revision,
+                "updated_at": initial_revision,
+            }
+        )
+        lineage = {
+            "packet_id": str(uuid.uuid4()),
+            "document_role": "cover_letter",
+            "status": "stale",
+            "stale_reasons": ["cover_letter_stale"],
+        }
+        monkeypatch.setattr(
+            server_module.jobs_svc,
+            "packet_lineage_for_document",
+            lambda requested_id: lineage if requested_id == doc_id else None,
+        )
+
+        saved = client.post(
+            "/api/cover-letter",
+            json={"id": doc_id, "body": "First committed edit.", "revision": initial_revision},
+            headers=headers,
+        )
+        assert saved.status_code == 200, saved.get_data(as_text=True)[:300]
+        current_revision = saved.get_json()["updated_at"]
+        assert current_revision != initial_revision
+        assert saved.get_json()["packet_lineage"] == lineage
+
+        stale = client.post(
+            "/api/cover-letter",
+            json={"id": doc_id, "body": "Conflicting stale edit.", "revision": initial_revision},
+            headers=headers,
+        )
+        assert stale.status_code == 409
+        assert stale.get_json()["code"] == "revision_conflict"
+        stored = next(
+            row for row in local_demo_store.db().tables["documents"] if row["id"] == doc_id
+        )
+        assert cl_service.parse_blob(stored["yaml_blob"])["body"] == "First committed edit."
+
+        retry = client.post(
+            "/api/cover-letter",
+            json={"id": doc_id, "body": "First committed edit.", "revision": initial_revision},
+            headers=headers,
+        )
+        assert retry.status_code == 200
+        assert retry.get_json()["updated_at"] == current_revision
+        assert retry.get_json()["packet_lineage"] == lineage
 
 
 class TestApplyNonDictJsonBody:

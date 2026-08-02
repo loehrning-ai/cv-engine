@@ -712,6 +712,32 @@ class TestDemoLoginRoute:
         # The exception text / creds never leak into the response.
         assert "invalid grant" not in res.get_data(as_text=True)
 
+    def test_local_session_fallback_skips_real_demo_seeding(self, server_module, client, monkeypatch):
+        import auth as auth_mod
+
+        monkeypatch.setenv("ONEPAGER_DEMO_MODE", "1")
+        monkeypatch.setattr(auth_mod, "SUPABASE_URL", "https://demo.supabase.co")
+        monkeypatch.setattr(auth_mod, "SUPABASE_PUBLISHABLE_KEY", "pk_test_123")
+        monkeypatch.setenv("DEMO_EMAIL", "explicit-demo@example.test")
+        monkeypatch.setenv("DEMO_PASSWORD", "explicit-test-password")
+        monkeypatch.setattr(
+            server_module,
+            "_demo_password_grant",
+            lambda *_args: (_ for _ in ()).throw(RuntimeError("grant failed")),
+        )
+        seed_calls = []
+        monkeypatch.setattr(
+            server_module.demo_seed,
+            "seed_demo_documents",
+            lambda: seed_calls.append("seed"),
+        )
+
+        response = client.post("/auth/demo-login")
+
+        assert response.status_code == 200
+        assert response.get_json()["local_demo"] is True
+        assert seed_calls == []
+
     def test_local_demo_token_rejected_when_demo_mode_off(self, server_module, monkeypatch):
         import auth as auth_mod
 

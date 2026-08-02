@@ -110,6 +110,7 @@ class _Supabase:
         }
         self.tables: dict[str, list[dict[str, Any]]] = {
             "pdf_artifacts": [],
+            "pdf_artifact_cleanup_queue": [],
             "profiles": [{"id": OWNER}],
         }
         self.auth = _Auth(self)

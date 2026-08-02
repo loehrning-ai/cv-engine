@@ -75,6 +75,7 @@
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (data) {
         if (!data || !Array.isArray(data.profiles)) return;
+        var selectedBeforeLoad = $("#tl-profile") ? $("#tl-profile").value : "";
         var next = {};
         data.profiles.forEach(function (profile) {
           if (profile && profile.id) next[profile.id] = profile;
@@ -82,6 +83,9 @@
         if (!Object.keys(next).length) return;
         ATS_PROFILES = next;
         populateProfileSelect(data.default_profile || "semantic_fit");
+        if (selectedBeforeLoad && $("#tl-profile").value !== selectedBeforeLoad) {
+          invalidateProfileState();
+        }
       })
       .catch(function () {});
   }
@@ -91,8 +95,11 @@
       var url = new URL(window.location.href);
       if (UUID_RE.test(jobId || "")) url.searchParams.set("job_id", jobId);
       else url.searchParams.delete("job_id");
+      if (state && UUID_RE.test(state.cvId || "")) url.searchParams.set("cv_id", state.cvId);
+      if (state && UUID_RE.test(state.sourceCvId || "")) url.searchParams.set("source_cv_id", state.sourceCvId);
       window.history.replaceState({}, "", url.pathname + url.search + url.hash);
     } catch (_) {}
+    syncLifecycleLinks();
   }
 
   // Ring geometry — must match the SVG circle r=52 in tailor.html.
@@ -103,11 +110,14 @@
   // dispatch; when the response lands we ignore it if the token has since moved
   // (the user clicked again, or navigated away). Cheap "ignore late responses".
   var query = new URLSearchParams(window.location.search || "");
-  var initialCvId = query.get("cv_id") || query.get("id") || "";
+  var initialCvId = query.get("cv_id") || query.get("source_cv_id") || query.get("id") || "";
+  var initialSourceCvId = query.get("source_cv_id") || query.get("cv_id") || query.get("id") || "";
   var initialJobId = query.get("job_id") || "";
   var UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
   var state = {
     cvId: null,
+    sourceCvId: UUID_RE.test(initialSourceCvId) ? initialSourceCvId : null,
+    tailoredCvId: null,
     jobId: UUID_RE.test(initialJobId) ? initialJobId : null,
     reqToken: 0,
     jobReq: 0,
@@ -142,6 +152,112 @@
     if (!window.OnePagerI18n) return fallback;
     var v = window.OnePagerI18n.t(key);
     return v && v !== key ? v : fallback;
+  }
+
+  function localText(en, de) {
+    var lang = window.OnePagerI18n && typeof window.OnePagerI18n.getLang === "function"
+      ? window.OnePagerI18n.getLang()
+      : (document.documentElement.lang || "en");
+    return String(lang || "en").toLowerCase().slice(0, 2) === "de" ? de : en;
+  }
+
+  function applyLocalMarkup(root) {
+    var scope = root || document;
+    var de = localText("en", "de") === "de";
+    scope.querySelectorAll("[data-local-en]").forEach(function (node) {
+      node.textContent = node.getAttribute(de ? "data-local-de" : "data-local-en") || "";
+    });
+    scope.querySelectorAll("[data-local-aria-en]").forEach(function (node) {
+      node.setAttribute("aria-label", node.getAttribute(de ? "data-local-aria-de" : "data-local-aria-en") || "");
+    });
+  }
+
+  function contextHref(path, options) {
+    options = options || {};
+    try {
+      var url = new URL(path, window.location.origin);
+      var jobId = options.jobId || state.jobId;
+      var cvId = options.cvId || state.cvId;
+      var sourceCvId = options.sourceCvId || state.sourceCvId || state.cvId;
+      if (UUID_RE.test(jobId || "")) url.searchParams.set("job_id", jobId);
+      if (UUID_RE.test(cvId || "")) url.searchParams.set("cv_id", cvId);
+      if (UUID_RE.test(sourceCvId || "")) url.searchParams.set("source_cv_id", sourceCvId);
+      if (options.id && UUID_RE.test(options.id)) url.searchParams.set("id", options.id);
+      return url.pathname + url.search;
+    } catch (_) {
+      return path;
+    }
+  }
+
+  function syncLifecycleLinks(options) {
+    options = options || {};
+    var jobId = options.jobId || state.jobId;
+    var sourceCvId = options.sourceCvId || state.sourceCvId || state.cvId;
+    var cvId = options.cvId || state.tailoredCvId || state.cvId;
+    var job = $("#tl-flow-job");
+    var source = $("#tl-flow-source");
+    var cover = $("#tl-flow-cover");
+    var lifecycle = $("#tl-lifecycle");
+    if (lifecycle) {
+      var jobStep = lifecycle.querySelector('[data-lifecycle-stage="job"]');
+      var sourceStep = lifecycle.querySelector('[data-lifecycle-stage="source-cv"]');
+      if (jobStep) jobStep.classList.toggle("is-complete", UUID_RE.test(jobId || ""));
+      if (sourceStep) sourceStep.classList.toggle("is-complete", UUID_RE.test(sourceCvId || ""));
+    }
+    if (job) job.href = UUID_RE.test(jobId || "")
+      ? contextHref("/jobs", { id: jobId, jobId: jobId, cvId: cvId, sourceCvId: sourceCvId })
+      : contextHref("/jobs", { cvId: cvId, sourceCvId: sourceCvId });
+    if (source) source.href = UUID_RE.test(sourceCvId || "")
+      ? contextHref("/app", { id: sourceCvId, cvId: sourceCvId, sourceCvId: sourceCvId, jobId: jobId })
+      : contextHref("/app", { jobId: jobId });
+    if (cover) cover.href = contextHref("/cover-letters", { jobId: jobId, cvId: cvId, sourceCvId: sourceCvId });
+    var context = $("#tl-flow-context");
+    if (context) {
+      var cvSelect = $("#tl-cv");
+      var cvName = cvSelect && cvSelect.selectedOptions && cvSelect.selectedOptions[0]
+        ? cvSelect.selectedOptions[0].textContent
+        : "";
+      var jobName = state.selectedJob
+        ? [state.selectedJob.title, state.selectedJob.company].filter(Boolean).join(" @ ")
+        : "";
+      var parts = [];
+      if (jobName) parts.push(localText("Job: ", "Job: ") + jobName);
+      if (cvName) parts.push(localText("Source: ", "Quelle: ") + cvName);
+      context.textContent = parts.join(" · ");
+    }
+  }
+
+  function renderNextActions(tailored) {
+    var box = $("#tl-next-actions");
+    if (!box) return;
+    var tailoredId = tailored && tailored.tailored_cv_id;
+    if (!UUID_RE.test(tailoredId || "")) {
+      box.hidden = true;
+      state.tailoredCvId = null;
+      syncLifecycleLinks();
+      return;
+    }
+    var lineage = tailored.packet_lineage && typeof tailored.packet_lineage === "object"
+      ? tailored.packet_lineage
+      : {};
+    var sourceCvId = tailored.source_cv_id || lineage.source_cv_id || state.sourceCvId || state.cvId;
+    var jobId = tailored.job_id || lineage.job_id || state.jobId;
+    state.tailoredCvId = tailoredId;
+    state.sourceCvId = UUID_RE.test(sourceCvId || "") ? sourceCvId : state.sourceCvId;
+    if (UUID_RE.test(jobId || "")) state.jobId = jobId;
+    var next = $("#tl-continue-cover");
+    var back = $("#tl-back-application");
+    if (next) next.href = contextHref("/cover-letters", {
+      jobId: jobId,
+      cvId: tailoredId,
+      sourceCvId: sourceCvId,
+    });
+    if (back) back.href = UUID_RE.test(jobId || "")
+      ? contextHref("/jobs", { id: jobId, jobId: jobId, cvId: tailoredId, sourceCvId: sourceCvId })
+      : contextHref("/jobs", { cvId: tailoredId, sourceCvId: sourceCvId });
+    box.hidden = false;
+    syncLifecycleLinks({ jobId: jobId, cvId: tailoredId, sourceCvId: sourceCvId });
+    if (window.renderIcons) window.renderIcons(box);
   }
   function fmt(key, fallback, vars) {
     var text = t(key, fallback);
@@ -191,6 +307,7 @@
     if (!job || !job.id) {
       box.hidden = true;
       box.innerHTML = "";
+      syncLifecycleLinks();
       return;
     }
     box.hidden = false;
@@ -207,6 +324,7 @@
         esc(t("jobs.selector.full_jd_warning", "This imported job still needs its full job description reviewed before scoring or generation.")) +
         ' <a href="/jobs?id=' + esc(job.id) + '">' + esc(t("jobs.selector.open_in_jobs", "Open in Jobs")) + "</a></span>";
     }
+    syncLifecycleLinks();
   }
 
   function attachedJobNeedsFullJd() {
@@ -256,11 +374,15 @@
           state.cvId = initialCvId && Array.prototype.some.call(sel.options, function (opt) { return opt.value === initialCvId; })
             ? initialCvId
             : sel.options[0].value;
+          if (!state.sourceCvId || !Array.prototype.some.call(sel.options, function (opt) { return opt.value === state.sourceCvId; })) {
+            state.sourceCvId = state.cvId;
+          }
           sel.value = state.cvId;
           selectedJobId = sel.selectedOptions && sel.selectedOptions[0] ? sel.selectedOptions[0].dataset.jobId : null;
           if (!state.jobId && selectedJobId && UUID_RE.test(selectedJobId)) state.jobId = selectedJobId;
           syncJobIdUrl(state.jobId);
           populateJobSelect();
+          syncLifecycleLinks();
         }
       })
       .catch(function () { setFeedback("error", t("cl.feedback.load_cvs_failed", "Couldn't load your CVs.")); });
@@ -425,6 +547,17 @@
     var value = sel && ATS_PROFILES[sel.value] ? sel.value : "semantic_fit";
     try { window.localStorage.setItem(ATS_PROFILE_KEY, value); } catch (_) {}
     return value;
+  }
+
+  function invalidateProfileState() {
+    selectedProfile();
+    // Profile choice is part of every ATS request and report. Ignore any
+    // response dispatched for the previous choice and remove its evidence.
+    state.reqToken++;
+    resetActionControls();
+    clearReview();
+    clearReportState();
+    setFeedback(null);
   }
 
   function compareProfiles(profile) {
@@ -603,6 +736,7 @@
       compare.hidden = true;
       compare.innerHTML = "";
     }
+    renderNextActions(null);
   }
 
   function resetActionControls() {
@@ -801,7 +935,17 @@
     var link = $("#tl-open-tailored");
     var build = $("#tl-build-tailored");
     if (tailored && tailored.tailored_cv_id) {
-      link.href = "/app?id=" + encodeURIComponent(tailored.tailored_cv_id);
+      var lineage = tailored.packet_lineage && typeof tailored.packet_lineage === "object"
+        ? tailored.packet_lineage
+        : {};
+      var resultJobId = tailored.job_id || lineage.job_id || state.jobId;
+      var resultSourceCvId = tailored.source_cv_id || lineage.source_cv_id || state.sourceCvId || state.cvId;
+      link.href = contextHref("/app", {
+        id: tailored.tailored_cv_id,
+        cvId: tailored.tailored_cv_id,
+        sourceCvId: resultSourceCvId,
+        jobId: resultJobId,
+      });
       link.hidden = false;
       if (build) {
         build.dataset.cvId = tailored.tailored_cv_id;
@@ -814,6 +958,7 @@
         delete build.dataset.cvId;
       }
     }
+    renderNextActions(tailored);
 
     if (tailored && tailored.review_token) {
       renderReview(tailored);
@@ -1291,9 +1436,13 @@
 
   // ── Wire up ────────────────────────────────────────────────────────────
   function init() {
+    applyLocalMarkup();
+    syncLifecycleLinks();
     $("#tl-cv").addEventListener("change", function (e) {
       state.reqToken++;
       state.cvId = e.target.value;
+      state.sourceCvId = e.target.value;
+      state.tailoredCvId = null;
       var previousJobId = state.jobId;
       var selected = e.target.selectedOptions && e.target.selectedOptions[0];
       var selectedJobId = selected ? selected.dataset.jobId : null;
@@ -1313,13 +1462,14 @@
       clearReportState();
       renderSelectedJobContext(null);
       loadLinkedJobDescription();
+      syncLifecycleLinks();
     });
     if ($("#tl-profile")) {
       populateProfileSelect("semantic_fit");
       var stored = null;
       try { stored = window.localStorage.getItem(ATS_PROFILE_KEY); } catch (_) {}
       if (stored && ATS_PROFILES[stored]) $("#tl-profile").value = stored;
-      $("#tl-profile").addEventListener("change", function () { selectedProfile(); });
+      $("#tl-profile").addEventListener("change", invalidateProfileState);
     }
     if ($("#tl-job")) $("#tl-job").addEventListener("change", function (e) { selectJobId(e.target.value); });
     loadAtsProfiles();
@@ -1348,10 +1498,12 @@
     // EN|DE toggle in the topbar, matching the other sub-pages.
     if (window.OnePagerI18n) {
       window.OnePagerI18n.init($(".cl-topbar-right"), function () {
+        applyLocalMarkup();
         populateProfileSelect(selectedProfile());
         relabelActionControls();
         renderSelectedJobContext(state.selectedJob);
         if (state.review) renderReport((state.review && state.review.ats) || {}, state.review);
+        syncLifecycleLinks();
       });
     }
 

@@ -164,10 +164,21 @@ def test_immutable_audit_tables_are_rpc_only() -> None:
     apply_service = (
         REPO / "tools" / "editor" / "apply_service.py"
     ).read_text(encoding="utf-8")
+    latest = (
+        REPO
+        / "supabase"
+        / "migrations"
+        / "20260801145140_preserve_application_history_deletes.sql"
+    ).read_text(encoding="utf-8").lower()
     assert 'rpc(\n            "record_byo_usage"' in gateway
-    assert '"record_application_apply_attempt"' in apply_service
+    assert '"record_application_apply_attempt"' not in apply_service
+    assert "_server_sb()" in apply_service
+    assert ".table(ATTEMPT_TABLE)" in apply_service
+    assert (
+        "revoke execute on function public.record_application_apply_attempt("
+        in latest
+    )
     assert '.table("usage_events").insert(' not in gateway
-    assert ".table(ATTEMPT_TABLE).insert(" not in apply_service
 
 
 def test_authenticated_definer_inputs_and_deletion_state_are_bounded() -> None:

@@ -6,6 +6,11 @@ FROM golang:1.26.5-alpine3.23@sha256:622e56dbc11a8cfe87cafa2331e9a201877271cbff9
 
 ARG CADDY_VERSION=v2.11.4
 ARG GRPC_VERSION=v1.82.1
+# Caddy v2.11.4 pulls golang.org/x/text v0.37.0, which carries CVE-2026-56852
+# (HIGH). Go picks the highest required version, so requiring the patched
+# release here lifts the transitive dependency without forking Caddy. Same
+# mechanism as the grpc pin above. Drop once Caddy requires >= v0.39.0.
+ARG XTEXT_VERSION=v0.39.0
 ENV CGO_ENABLED=0 \
     GOTOOLCHAIN=local
 WORKDIR /src
@@ -31,11 +36,13 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go mod init onepager.local/caddy; \
     go mod edit \
       -require="github.com/caddyserver/caddy/v2@${CADDY_VERSION}" \
-      -require="google.golang.org/grpc@${GRPC_VERSION}"; \
+      -require="google.golang.org/grpc@${GRPC_VERSION}" \
+      -require="golang.org/x/text@${XTEXT_VERSION}"; \
     go mod tidy; \
     go list -m all > /tmp/caddy-build-modules.txt; \
     grep -Fqx "github.com/caddyserver/caddy/v2 ${CADDY_VERSION}" /tmp/caddy-build-modules.txt; \
-    grep -Fqx "google.golang.org/grpc ${GRPC_VERSION}" /tmp/caddy-build-modules.txt
+    grep -Fqx "google.golang.org/grpc ${GRPC_VERSION}" /tmp/caddy-build-modules.txt; \
+    grep -Fqx "golang.org/x/text ${XTEXT_VERSION}" /tmp/caddy-build-modules.txt
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
@@ -53,11 +60,12 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     grep -Fq "/tmp/caddy: go1.26.5" /tmp/caddy-build-info.txt; \
     grep -Fq "dep	github.com/caddyserver/caddy/v2	${CADDY_VERSION}" /tmp/caddy-build-info.txt; \
     grep -Fq "dep	google.golang.org/grpc	${GRPC_VERSION}" /tmp/caddy-build-info.txt; \
+    grep -Fq "dep	golang.org/x/text	${XTEXT_VERSION}" /tmp/caddy-build-info.txt; \
     cp "$(go env GOMODCACHE)/github.com/caddyserver/caddy/v2@${CADDY_VERSION}/LICENSE" /tmp/CADDY-LICENSE.txt
 
 # The runtime has no compiler or general-purpose HTTP client. Caddy is a static
 # binary; only the current CA bundle is added for ACME and upstream TLS.
-FROM cgr.dev/chainguard/wolfi-base@sha256:02dab76bd852a70556b5b2002195c8a5fdab77d323c433bf6642aab080489795
+FROM cgr.dev/chainguard/wolfi-base@sha256:003627df3c1e1bba0c4116afcddb314aca9594ee2328c7e876a8081a6c988b2e
 
 LABEL org.opencontainers.image.title="CV Copilot Caddy proxy" \
       org.opencontainers.image.version="2.11.4" \

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from playwright.sync_api import expect, sync_playwright
@@ -22,6 +22,7 @@ from .layout_helpers import (
     install_layout_vendor_routes,
     network_collector,
     require_live_server,
+    wait_for_network_settle,
 )
 
 
@@ -55,6 +56,37 @@ def _json(route, payload: dict, status: int = 200) -> None:
         content_type="application/json",
         body=json.dumps(payload),
     )
+
+
+def _assert_application_context_href(
+    locator,
+    *,
+    path: str,
+    document_id: str,
+    job_id: str,
+    cv_id: str,
+    source_cv_id: str,
+) -> None:
+    """Assert a fully-populated application-context link.
+
+    Takes a locator, not a string, on purpose. These hrefs are built
+    progressively: `linkedDocumentHref` in jobs.js reads `source_cv_id` off the
+    packet, and packets arrive on a later fetch than the linked-document rows,
+    so the first render emits a three-parameter href and a subsequent render
+    adds the fourth. A one-shot `get_attribute` taken right after the element
+    becomes visible can therefore capture the intermediate form and fail with a
+    three-key vs four-key mismatch — intermittently, and only under whole-suite
+    timing. Poll for the final shape before reading.
+    """
+    expect(locator).to_have_attribute("href", re.compile(r"[?&]source_cv_id="))
+    parsed = urlparse(locator.get_attribute("href") or "")
+    assert parsed.path == path
+    assert parse_qs(parsed.query) == {
+        "id": [document_id],
+        "job_id": [job_id],
+        "cv_id": [cv_id],
+        "source_cv_id": [source_cv_id],
+    }
 
 
 def _install_auth_stub(page) -> None:
@@ -151,6 +183,31 @@ def _prepare_authenticated_page(page, viewport: Viewport) -> tuple[list[str], li
             body='{"documents": [], "count": 0}',
         ),
     )
+    # Jobs now owns application readiness. Most workflow tests exercise a
+    # narrower Jobs behavior and register their own API route afterwards; a
+    # fallback must still receive a deterministic, non-actionable readiness
+    # response instead of reaching the live server with the fake token.
+    page.route(
+        "**/api/jobs/*/apply/readiness*",
+        lambda route: _json(route, {
+            "ready": False,
+            "blockers": [{
+                "code": "reviewed_packet_missing",
+                "message": "A reviewed application packet is required.",
+            }],
+            "attempts": [],
+            "target": {
+                "url": "",
+                "host": "",
+                "classification": "invalid",
+                "open_allowed": False,
+                "reason_code": "invalid_application_url",
+            },
+            "packet": None,
+            "config": {"available": False, "enabled": False, "kill_switch_active": True},
+            "actions": {"manual_open": False, "dry_run": False, "submit": False},
+        }),
+    )
     console_errors, page_errors = console_collector(page)
     request_failures, bad_responses = network_collector(page)
     return console_errors, page_errors, request_failures, bad_responses
@@ -158,7 +215,7 @@ def _prepare_authenticated_page(page, viewport: Viewport) -> tuple[list[str], li
 
 def _goto_authenticated(page, route: str) -> None:
     page.goto(f"{BASE_URL}{route}", wait_until="domcontentloaded")
-    page.wait_for_load_state("networkidle")
+    wait_for_network_settle(page)
     expect(page.locator("#auth-gate")).to_have_count(0)
 
 
@@ -230,9 +287,15 @@ def _packet_payload(**overrides) -> dict:
         "cover_letter_review_id": "review-job",
         "packet_version": 1,
         "document_links": {
-            "source_cv": f"/app?id={CV_ID}",
-            "tailored_cv": f"/app?id={TAILORED_CV_ID}",
-            "cover_letter": f"/cover-letters?id={LETTER_ID}",
+            "source_cv": f"/app?id={CV_ID}&job_id={JOB_ID}&cv_id={CV_ID}&source_cv_id={CV_ID}",
+            "tailored_cv": (
+                f"/app?id={TAILORED_CV_ID}&job_id={JOB_ID}"
+                f"&cv_id={TAILORED_CV_ID}&source_cv_id={CV_ID}"
+            ),
+            "cover_letter": (
+                f"/cover-letters?id={LETTER_ID}&job_id={JOB_ID}"
+                f"&cv_id={TAILORED_CV_ID}&source_cv_id={CV_ID}"
+            ),
         },
     }
     payload.update(overrides)
@@ -407,7 +470,7 @@ def test_jobs_generation_links_packet_rows_and_pdf_actions(browser):
 
         page.route("**/api/**", handle_api)
         _goto_authenticated(page, f"/jobs?id={JOB_ID}")
-        page.wait_for_load_state("networkidle")
+        wait_for_network_settle(page)
         page.locator("#jb-generate").click()
         expect(page.locator("#jb-review-panel")).to_be_visible()
         page.locator("#jb-apply-review").click()
@@ -418,8 +481,16 @@ def test_jobs_generation_links_packet_rows_and_pdf_actions(browser):
         page.locator("#jb-apply-review").click()
         expect(page.locator("#jb-cvs .jb-linked-row")).to_have_count(1)
         expect(page.locator("#jb-letters .jb-linked-row")).to_have_count(1)
-        assert page.locator("#jb-cvs .jb-linked-open").get_attribute("href").endswith(f"/app?id={TAILORED_CV_ID}")
-        assert page.locator("#jb-letters .jb-linked-open").get_attribute("href").endswith(f"/cover-letters?id={LETTER_ID}")
+        _assert_application_context_href(
+            page.locator("#jb-cvs .jb-linked-open"),
+            path="/app", document_id=TAILORED_CV_ID, job_id=JOB_ID,
+            cv_id=TAILORED_CV_ID, source_cv_id=CV_ID,
+        )
+        _assert_application_context_href(
+            page.locator("#jb-letters .jb-linked-open"),
+            path="/cover-letters", document_id=LETTER_ID, job_id=JOB_ID,
+            cv_id=TAILORED_CV_ID, source_cv_id=CV_ID,
+        )
         assert_no_horizontal_overflow(page)
         assert_no_text_overflow(page, [".jb-linked-row", ".jb-generate-btn", "#jb-gen-feedback"])
         assert_inside_viewport(page, [".jb-linked-row", ".jb-linked-pdf"])
@@ -496,10 +567,10 @@ def test_jobs_repository_star_status_delete_and_palette_focus(browser):
         expect(page.locator("#jb-star")).to_have_attribute("aria-pressed", "true")
         assert patch_bodies[-1] == {"starred": True}
 
-        page.locator("#jb-status-select").select_option("applied")
+        page.locator("#jb-status-select").select_option("closed")
         expect(page.locator("#jb-status-select")).to_have_value("open")
         expect(page.locator("#jb-gen-feedback")).to_contain_text("simulated status write failure")
-        assert status_bodies[-1] == {"status": "applied"}
+        assert status_bodies[-1] == {"status": "closed"}
         expect(page.locator(".jb-badge-open").first).to_contain_text(re.compile("open", re.I))
 
         _run_palette_action(page, "Add job")
@@ -512,6 +583,54 @@ def test_jobs_repository_star_status_delete_and_palette_focus(browser):
         console_errors[:] = [err for err in console_errors if "status of 500" not in err]
         assert_clean_console(console_errors, page_errors)
         assert_clean_network(request_failures, bad_responses, allow_statuses=(500,))
+    finally:
+        context.close()
+
+
+def test_jobs_status_select_serializes_writes(browser):
+    context = browser.new_context(device_scale_factor=1)
+    page = context.new_page()
+    status_bodies: list[dict] = []
+    held_routes = []
+    try:
+        console_errors, page_errors, request_failures, bad_responses = _prepare_authenticated_page(page, Viewport(1440, 900))
+
+        def handle_api(route):
+            req = route.request
+            path = urlparse(req.url).path
+            if path == "/api/jobs" and req.method == "GET":
+                _json(route, {"jobs": [_job_payload(False)["job"]], "count": 1})
+            elif path == "/api/cvs" and req.method == "GET":
+                _json(route, {"cvs": [{"id": CV_ID, "name": "Source CV"}]})
+            elif path == f"/api/jobs/{JOB_ID}" and req.method == "GET":
+                _json(route, _job_payload(False))
+            elif path == f"/api/jobs/{JOB_ID}/status" and req.method == "POST":
+                status_bodies.append(json.loads(req.post_data or "{}"))
+                held_routes.append(route)
+            else:
+                route.fallback()
+
+        page.route("**/api/**", handle_api)
+        _goto_authenticated(page, f"/jobs?id={JOB_ID}")
+        page.locator("#jb-status-select").select_option("speculative")
+        expect(page.locator("#jb-status-select")).to_be_disabled()
+        assert status_bodies == [{"status": "speculative"}]
+
+        page.locator("#jb-status-select").evaluate(
+            "node => { node.value = 'closed'; node.dispatchEvent(new Event('change', { bubbles: true })); }"
+        )
+        page.wait_for_timeout(50)
+        assert status_bodies == [{"status": "speculative"}]
+
+        held_routes[0].fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"status": "speculative"}),
+        )
+        expect(page.locator("#jb-status-select")).to_be_enabled()
+        expect(page.locator("#jb-status-select")).to_have_value("speculative")
+        assert_clean_console(console_errors, page_errors)
+        assert_clean_network(request_failures, bad_responses)
     finally:
         context.close()
 
@@ -676,7 +795,7 @@ def test_jobs_review_first_flow_links_packet_rows(browser):
 
         page.route("**/api/**", handle_api)
         _goto_authenticated(page, f"/jobs?id={JOB_ID}")
-        page.locator("#jb-review").click()
+        page.locator("#jb-generate").click()
         expect(page.locator("#jb-review-panel")).to_be_visible()
         expect(page.locator("#jb-review-diff")).to_contain_text("+new bullet")
         assert_no_text_overflow(page, ["#jb-review-panel", "#jb-review-summary", "#jb-review-diff"])
@@ -692,8 +811,87 @@ def test_jobs_review_first_flow_links_packet_rows(browser):
         assert generated["confirm_calls"][-1]["cover_letter_hash"] == "d" * 64
         expect(page.locator("#jb-cvs .jb-linked-row")).to_have_count(1)
         expect(page.locator("#jb-letters .jb-linked-row")).to_have_count(1)
-        assert page.locator("#jb-cvs .jb-linked-open").get_attribute("href").endswith(f"/app?id={TAILORED_CV_ID}")
-        assert page.locator("#jb-letters .jb-linked-open").get_attribute("href").endswith(f"/cover-letters?id={LETTER_ID}")
+        _assert_application_context_href(
+            page.locator("#jb-cvs .jb-linked-open"),
+            path="/app", document_id=TAILORED_CV_ID, job_id=JOB_ID,
+            cv_id=TAILORED_CV_ID, source_cv_id=CV_ID,
+        )
+        _assert_application_context_href(
+            page.locator("#jb-letters .jb-linked-open"),
+            path="/cover-letters", document_id=LETTER_ID, job_id=JOB_ID,
+            cv_id=TAILORED_CV_ID, source_cv_id=CV_ID,
+        )
+        assert_clean_console(console_errors, page_errors)
+        assert_clean_network(request_failures, bad_responses)
+    finally:
+        context.close()
+
+
+def test_jobs_reload_restores_pending_cover_review(browser):
+    context = browser.new_context(device_scale_factor=1)
+    page = context.new_page()
+    state = {"confirmed": False, "confirm_bodies": []}
+    try:
+        console_errors, page_errors, request_failures, bad_responses = _prepare_authenticated_page(page, Viewport(1440, 900))
+
+        def detail_payload() -> dict:
+            payload = _job_payload(True)
+            if not state["confirmed"]:
+                payload["packets"] = [_packet_payload(
+                    status="review_applied",
+                    stored_status="review_applied",
+                    cover_letter_review_status="pending",
+                    cover_letter_review_confirmed_at=None,
+                )]
+            return payload
+
+        def handle_api(route):
+            req = route.request
+            path = urlparse(req.url).path
+            if path == "/api/jobs" and req.method == "GET":
+                _json(route, {"jobs": [detail_payload()["job"]], "count": 1})
+            elif path == "/api/cvs" and req.method == "GET":
+                _json(route, {"cvs": [{"id": CV_ID, "name": "Source CV"}]})
+            elif path == f"/api/jobs/{JOB_ID}" and req.method == "GET":
+                _json(route, detail_payload())
+            elif path == f"/api/jobs/{JOB_ID}/packets/{PACKET_ID}/confirm-cover-letter-review" and req.method == "POST":
+                body = json.loads(req.post_data or "{}")
+                state["confirm_bodies"].append(body)
+                state["confirmed"] = True
+                _json(route, {
+                    "packet_id": PACKET_ID,
+                    "cover_letter_review_status": "confirmed",
+                    "cover_letter_review_confirmed_at": "2026-08-01T12:00:00+00:00",
+                })
+            else:
+                route.fallback()
+
+        page.route("**/api/**", handle_api)
+        _goto_authenticated(page, f"/jobs?id={JOB_ID}")
+
+        expect(page.locator("#jb-review-panel")).to_be_visible()
+        expect(page.locator("#jb-cover-review-panel")).to_be_visible()
+        expect(page.locator("#jb-apply-review .jb-apply-label")).to_have_text("Confirm review")
+        _assert_application_context_href(
+            page.locator("#jb-cover-grounding-status a"),
+            path="/cover-letters", document_id=LETTER_ID, job_id=JOB_ID,
+            cv_id=TAILORED_CV_ID, source_cv_id=CV_ID,
+        )
+        expect(page.locator(f'.jb-packet-row[data-packet-id="{PACKET_ID}"]')).to_have_attribute(
+            "data-packet-state", "review_applied"
+        )
+
+        page.locator("#jb-apply-review").click()
+        expect(page.locator("#jb-gen-feedback")).to_contain_text("Review and confirm")
+        assert state["confirm_bodies"] == []
+        page.locator("#jb-approve-cover-review").check()
+        page.locator("#jb-apply-review").click()
+
+        expect(page.locator("#jb-review-panel")).to_be_hidden()
+        expect(page.locator(f'.jb-packet-row[data-packet-id="{PACKET_ID}"]')).to_have_attribute(
+            "data-packet-state", "packet_created"
+        )
+        assert state["confirm_bodies"] == [{"cover_letter_hash": "d" * 64}]
         assert_clean_console(console_errors, page_errors)
         assert_clean_network(request_failures, bad_responses)
     finally:
@@ -735,10 +933,10 @@ def test_jobs_packet_state_renders_no_packet_stale_applied_regenerated_and_archi
         state["job_status"] = "applied"
         state["packet"] = _packet_payload(status="packet_created")
         _goto_authenticated(page, f"/jobs?id={JOB_ID}")
-        expect(page.locator("#jb-packet-state .jb-packet-row")).to_have_attribute("data-packet-state", "applied_external")
-        expect(page.locator("#jb-packet-state")).to_contain_text("Applied externally")
-        expect(page.locator("#jb-cvs .jb-linked-row")).to_have_attribute("data-packet-state", "applied_external")
-        expect(page.locator("#jb-cvs .jb-linked-row")).to_have_attribute("data-packet-usable", "false")
+        expect(page.locator("#jb-packet-state .jb-packet-row")).to_have_attribute("data-packet-state", "packet_created")
+        expect(page.locator("#jb-packet-state")).to_contain_text("Packet")
+        expect(page.locator("#jb-cvs .jb-linked-row")).to_have_attribute("data-packet-state", "packet_created")
+        expect(page.locator("#jb-cvs .jb-linked-row")).to_have_attribute("data-packet-usable", "true")
         expect(page.locator("#jb-cvs .jb-linked-row")).to_have_attribute("data-score-system-id", "semantic_fit")
 
         state["job_status"] = "open"
@@ -884,6 +1082,24 @@ def test_tailor_review_apply_report_is_unclipped(browser, viewport: Viewport):
         page.wait_for_timeout(250)
         targets = page.evaluate("window.__openedPdfTargets")
         assert targets and all(target != "about:blank" for target in targets)
+        if viewport.width <= 840:
+            main_scroll = page.evaluate(
+                """
+                () => {
+                  const main = document.querySelector(".cl-main");
+                  return {
+                    rectLeft: Math.round(main.getBoundingClientRect().left),
+                    scrollLeft: main.scrollLeft,
+                    overflowX: getComputedStyle(main).overflowX,
+                  };
+                }
+                """
+            )
+            assert main_scroll["rectLeft"] == 0
+            assert main_scroll["scrollLeft"] == 0
+            # CSS Overflow computes `clip` to `hidden` when the other axis is
+            # scrollable. Both values enforce no horizontal user scrolling.
+            assert main_scroll["overflowX"] in {"clip", "hidden"}
         assert_clean_console(console_errors, page_errors)
         assert_clean_network(request_failures, bad_responses)
     finally:
@@ -970,6 +1186,60 @@ def test_tailor_profiles_post_selected_score_system_and_render_transparency(brow
         expect(page.locator("#tl-review-lineage")).to_contain_text("anthropic / claude-test")
         assert review_bodies[-1] == _expected_profile_body(profile, job_id=JOB_ID, include_jd_text=False)
 
+        assert_clean_console(console_errors, page_errors)
+        assert_clean_network(request_failures, bad_responses)
+    finally:
+        context.close()
+
+
+def test_tailor_profile_change_invalidates_inflight_score(browser):
+    context = browser.new_context(device_scale_factor=1)
+    page = context.new_page()
+    score_bodies: list[dict] = []
+    held_routes = []
+    try:
+        console_errors, page_errors, request_failures, bad_responses = _prepare_authenticated_page(page, Viewport(1440, 900))
+
+        def handle_api(route):
+            req = route.request
+            path = urlparse(req.url).path
+            if path == "/api/ats-profiles":
+                _json(route, _profiles_payload())
+            elif path == "/api/cvs":
+                _json(route, {"cvs": [{"id": CV_ID, "name": "Source CV", "job_id": JOB_ID}]})
+            elif path == "/api/jobs" and req.method == "GET":
+                _json(route, {"jobs": [], "count": 0})
+            elif path == f"/api/jobs/{JOB_ID}":
+                _json(route, _job_payload(False))
+            elif path == "/api/ats-score" and req.method == "POST":
+                score_bodies.append(json.loads(req.post_data or "{}"))
+                held_routes.append(route)
+            else:
+                route.fallback()
+
+        page.route("**/api/**", handle_api)
+        _goto_authenticated(page, f"/tailor?cv_id={CV_ID}&job_id={JOB_ID}")
+        expect(page.locator("#tl-jd")).to_have_value(JD_TEXT)
+
+        page.locator("#tl-profile").select_option("semantic_fit")
+        page.locator("#tl-score").click()
+        expect(page.locator("#tl-score")).to_be_disabled()
+        assert score_bodies[-1]["profile"] == "semantic_fit"
+
+        page.locator("#tl-profile").select_option("strict_requirements")
+        expect(page.locator("#tl-score")).to_be_enabled()
+        expect(page.locator("#tl-empty")).to_be_visible()
+        expect(page.locator("#tl-score-num")).to_have_text("—")
+
+        held_routes[0].fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(_ats_payload("semantic_fit")),
+        )
+        page.wait_for_timeout(100)
+        expect(page.locator("#tl-empty")).to_be_visible()
+        expect(page.locator("#tl-score-num")).to_have_text("—")
+        expect(page.locator("#tl-profile-comparison")).to_be_hidden()
         assert_clean_console(console_errors, page_errors)
         assert_clean_network(request_failures, bad_responses)
     finally:
@@ -1326,6 +1596,149 @@ def test_app_ats_badge_blocks_unusable_packet_lineage(browser, lineage_overrides
         context.close()
 
 
+def test_editor_preserves_explicit_job_and_source_context_for_tailor_hop(browser):
+    context = browser.new_context(device_scale_factor=1)
+    page = context.new_page()
+    try:
+        page.set_viewport_size({"width": 1440, "height": 900})
+        install_layout_vendor_routes(page)
+        _install_auth_stub(page)
+        console_errors, page_errors = console_collector(page)
+        request_failures, bad_responses = network_collector(page)
+
+        def handle_api(route):
+            req = route.request
+            path = urlparse(req.url).path
+            if path == "/api/ats-profiles":
+                _json(route, _profiles_payload())
+            elif path == "/api/cvs":
+                _json(route, {"cvs": [{"id": CV_ID, "name": "Unlinked source CV"}]})
+            elif path == "/api/cv":
+                route.fulfill(
+                    status=200,
+                    headers={"X-OnePager-Revision": "rev"},
+                    content_type="text/yaml",
+                    body="name: Source CV\nskills:\n  - label: Data\n    items: Spark, Airflow\n",
+                )
+            elif path in {"/api/preview", "/api/templates", "/api/themes", "/api/documents", "/api/analytics/event"}:
+                _json(route, {"documents": [], "templates": [], "themes": []})
+            else:
+                _json(route, {})
+
+        page.route("**/api/**", handle_api)
+        _goto_authenticated(
+            page,
+            f"/app?id={CV_ID}&job_id={JOB_ID}&cv_id={CV_ID}&source_cv_id={CV_ID}",
+        )
+
+        # `updateTailorLinks()` rewrites this href once the CV and job context
+        # resolve, so a one-shot read right after navigation can catch the
+        # pre-context value — the same race that made the linked-CV lineage
+        # assertions intermittent. Poll for the settled href first.
+        tailor_link = page.locator("#tailor-btn")
+        expect(tailor_link).to_have_attribute(
+            "href", re.compile(r"^/tailor\?.*[?&]source_cv_id=")
+        )
+        href = tailor_link.get_attribute("href") or ""
+        assert href.startswith("/tailor?")
+        assert f"job_id={JOB_ID}" in href
+        assert f"cv_id={CV_ID}" in href
+        assert f"source_cv_id={CV_ID}" in href
+        assert_clean_console(console_errors, page_errors)
+        assert_clean_network(request_failures, bad_responses)
+    finally:
+        context.close()
+
+
+def test_jobs_linked_cv_preserves_source_lineage_through_editor_to_tailor(browser):
+    context = browser.new_context(device_scale_factor=1)
+    page = context.new_page()
+    try:
+        page.set_viewport_size({"width": 1440, "height": 900})
+        install_layout_vendor_routes(page)
+        _install_auth_stub(page)
+        console_errors, page_errors = console_collector(page)
+        request_failures, bad_responses = network_collector(page)
+        lineage = _packet_lineage_payload(document_id=TAILORED_CV_ID)
+
+        def handle_api(route):
+            req = route.request
+            path = urlparse(req.url).path
+            if path == "/api/jobs" and req.method == "GET":
+                _json(route, {"jobs": [_job_payload(True)["job"]], "count": 1})
+            elif path == f"/api/jobs/{JOB_ID}" and req.method == "GET":
+                _json(route, _job_payload(True))
+            elif path == f"/api/jobs/{JOB_ID}/apply/readiness" and req.method == "GET":
+                _json(route, {
+                    "ready": False,
+                    "blockers": [{"code": "pdf_missing", "message": "Build the packet PDFs."}],
+                    "attempts": [],
+                    "packet": _packet_payload(),
+                    "target": {"url": "", "host": "", "classification": "invalid", "open_allowed": False},
+                    "config": {"available": False, "enabled": False, "kill_switch_active": True},
+                    "actions": {"manual_open": False, "dry_run": False, "submit": False},
+                })
+            elif path == "/api/cvs":
+                _json(route, {"cvs": [
+                    {"id": CV_ID, "name": "Source CV"},
+                    {
+                        "id": TAILORED_CV_ID,
+                        "name": "Source CV - reviewed for Acme",
+                        "job_id": JOB_ID,
+                        "job_title": "Senior Data Engineer",
+                        "packet_lineage": lineage,
+                    },
+                ]})
+            elif path == "/api/cv":
+                route.fulfill(
+                    status=200,
+                    headers={"X-OnePager-Revision": "rev"},
+                    content_type="text/yaml",
+                    body="name: Source CV - reviewed for Acme\nskills:\n  - label: Data\n    items: Spark, Airflow\n",
+                )
+            elif path == "/api/preview":
+                route.fulfill(
+                    status=200,
+                    content_type="text/html",
+                    body="<!doctype html><html><body><main>Tailored CV preview</main></body></html>",
+                )
+            elif path == "/api/ats-profiles":
+                _json(route, _profiles_payload())
+            elif path == "/api/ats-score" and req.method == "POST":
+                _json(route, _ats_payload("semantic_fit"))
+            elif path == "/api/templates":
+                _json(route, {"templates": []})
+            elif path == "/api/themes":
+                _json(route, {"themes": []})
+            elif path == "/api/documents":
+                _json(route, {"documents": [], "count": 0})
+            else:
+                _json(route, {})
+
+        page.route("**/api/**", handle_api)
+        _goto_authenticated(page, f"/jobs?id={JOB_ID}")
+
+        linked_cv = page.locator("#jb-cvs .jb-linked-open")
+        expect(linked_cv).to_be_visible()
+        _assert_application_context_href(
+            linked_cv,
+            path="/app", document_id=TAILORED_CV_ID, job_id=JOB_ID,
+            cv_id=TAILORED_CV_ID, source_cv_id=CV_ID,
+        )
+        linked_cv.click()
+        page.wait_for_url(re.compile(r"/app\?"))
+        expect(page.locator("#tailor-btn")).to_be_attached()
+        _assert_application_context_href(
+            page.locator("#tailor-btn"),
+            path="/tailor", document_id=TAILORED_CV_ID, job_id=JOB_ID,
+            cv_id=TAILORED_CV_ID, source_cv_id=CV_ID,
+        )
+        assert_clean_console(console_errors, page_errors)
+        assert_clean_network(request_failures, bad_responses)
+    finally:
+        context.close()
+
+
 def test_jobs_local_search_creates_review_import_preview(browser):
     context = browser.new_context(device_scale_factor=1)
     page = context.new_page()
@@ -1590,7 +2003,14 @@ def test_jobs_local_search_strict_and_flexible_semantic_modes(browser):
 def test_live_fixture_job_search_save_tailor_apply_open_and_pdf_flow(browser):
     context = browser.new_context(device_scale_factor=1)
     page = context.new_page()
-    state = {"saved": False, "packet": False, "builds": []}
+    state = {
+        "saved": False,
+        "packet": False,
+        "builds": [],
+        "confirmed": False,
+        "attempts": [],
+        "apply_posts": [],
+    }
     try:
         console_errors, page_errors, request_failures, bad_responses = _prepare_authenticated_page(page, Viewport(1440, 900))
 
@@ -1613,8 +2033,67 @@ def test_live_fixture_job_search_save_tailor_apply_open_and_pdf_flow(browser):
                 "seniority": "senior",
                 "verification_status": "needs_review",
                 "jd_text": JD_TEXT,
+                "source_url": "https://example.test/jobs/fp-live",
                 "has_cover": state["packet"],
                 "cover_id": LETTER_ID if state["packet"] else None,
+            }
+
+        def readiness_payload() -> dict:
+            packet = _packet_payload() if state["packet"] else None
+            cv_built = {"id": TAILORED_CV_ID} in state["builds"]
+            letter_built = {"letter": LETTER_ID} in state["builds"]
+            blockers = []
+            if not packet:
+                blockers.append({
+                    "code": "reviewed_packet_missing",
+                    "message": "A reviewed application packet is required.",
+                })
+            else:
+                if not cv_built:
+                    blockers.append({
+                        "code": "tailored_cv_pdf_missing",
+                        "message": "Build the tailored CV PDF.",
+                    })
+                if not letter_built:
+                    blockers.append({
+                        "code": "cover_letter_pdf_missing",
+                        "message": "Build the cover-letter PDF.",
+                    })
+                if cv_built and letter_built and not state["confirmed"]:
+                    blockers.extend([
+                        {"code": "profile_answers_incomplete", "message": "Confirm profile answers."},
+                        {"code": "legal_answers_unconfirmed", "message": "Confirm legal answers."},
+                        {"code": "visa_answers_unconfirmed", "message": "Confirm visa answers."},
+                    ])
+            ready = bool(packet and not blockers)
+            return {
+                "job_id": JOB_ID,
+                "ready": ready,
+                "blockers": blockers,
+                "attempts": list(reversed(state["attempts"])),
+                "target": {
+                    "url": "https://example.test/jobs/fp-live",
+                    "host": "example.test",
+                    "classification": "unknown",
+                    "method": "manual_open",
+                    "open_allowed": True,
+                    "dry_run_allowed": False,
+                    "submit_allowed": False,
+                    "automation_allowed": False,
+                    "reason_code": "unknown_manual_open_only",
+                    "reason": "Unknown hosts are manual/open only.",
+                },
+                "packet": packet,
+                "config": {"available": True, "enabled": True, "kill_switch_active": False},
+                "requires_confirmation": True,
+                "required_confirmations": [
+                    "user_confirmed",
+                    "reviewed_packet_confirmed",
+                    "profile_answers_complete",
+                    "legal_answers_confirmed",
+                    "visa_answers_confirmed",
+                ],
+                "actions": {"manual_open": ready, "dry_run": False, "submit": False},
             }
 
         def handle_api(route):
@@ -1715,6 +2194,54 @@ def test_live_fixture_job_search_save_tailor_apply_open_and_pdf_flow(browser):
                     "cover_letter_review_status": "confirmed",
                     "cover_letter_review_confirmed_at": "2026-07-02T12:00:00+00:00",
                 })
+            elif path == f"/api/jobs/{JOB_ID}/apply/readiness" and req.method == "GET":
+                _json(route, readiness_payload())
+            elif path == f"/api/jobs/{JOB_ID}/apply/open" and req.method == "POST":
+                body = json.loads(req.post_data or "{}")
+                assert body == {
+                    "user_confirmed": True,
+                    "reviewed_packet_confirmed": True,
+                    "profile_answers_complete": True,
+                    "legal_answers_confirmed": True,
+                    "visa_answers_confirmed": True,
+                    "packet_id": PACKET_ID,
+                }
+                state["apply_posts"].append(body)
+                attempt = {
+                    "id": "88888888-8888-4888-8888-888888888888",
+                    "job_id": JOB_ID,
+                    "packet_id": PACKET_ID,
+                    "action": "manual_open",
+                    "status": "manual_open_ready",
+                    "reason_code": "unknown_manual_open_only",
+                    "target_host": "example.test",
+                    "target_classification": "unknown",
+                    "submitted": False,
+                    "automation_performed": False,
+                    "created_at": "2026-08-01T12:00:00+00:00",
+                }
+                if len(state["apply_posts"]) == 1:
+                    _json(route, {
+                        "status": "manual_open_ready",
+                        "submitted": False,
+                        "automation_performed": False,
+                        "open_url": "https://mismatch.example/jobs/fp-live",
+                        "target": readiness_payload()["target"],
+                        "packet": _packet_payload(),
+                        "attempt": attempt,
+                    }, status=202)
+                    return
+                state["confirmed"] = True
+                state["attempts"].append(attempt)
+                _json(route, {
+                    "status": "manual_open_ready",
+                    "submitted": False,
+                    "automation_performed": False,
+                    "open_url": "https://example.test/jobs/fp-live",
+                    "target": readiness_payload()["target"],
+                    "packet": _packet_payload(),
+                    "attempt": attempt,
+                }, status=202)
             elif path == "/api/build" and req.method == "POST":
                 state["builds"].append(json.loads(req.post_data or "{}"))
                 _pdf(route)
@@ -1738,7 +2265,7 @@ def test_live_fixture_job_search_save_tailor_apply_open_and_pdf_flow(browser):
         expect(page.locator("#jb-grid")).to_contain_text("Senior Data Engineer")
         page.locator(f'.jb-card[data-id="{JOB_ID}"] .jb-card-detail').click()
         expect(page.locator("#jb-detail-title")).to_contain_text("Senior Data Engineer")
-        page.locator("#jb-review").click()
+        page.locator("#jb-generate").click()
         expect(page.locator("#jb-review-panel")).to_be_visible()
         page.locator("#jb-apply-review").click()
         expect(page.locator("#jb-gen-feedback")).to_contain_text("Cover letter generated")
@@ -1746,8 +2273,16 @@ def test_live_fixture_job_search_save_tailor_apply_open_and_pdf_flow(browser):
         page.locator("#jb-apply-review").click()
         expect(page.locator("#jb-cvs .jb-linked-row")).to_have_count(1)
         expect(page.locator("#jb-letters .jb-linked-row")).to_have_count(1)
-        assert page.locator("#jb-cvs .jb-linked-open").get_attribute("href").endswith(f"/app?id={TAILORED_CV_ID}")
-        assert page.locator("#jb-letters .jb-linked-open").get_attribute("href").endswith(f"/cover-letters?id={LETTER_ID}")
+        _assert_application_context_href(
+            page.locator("#jb-cvs .jb-linked-open"),
+            path="/app", document_id=TAILORED_CV_ID, job_id=JOB_ID,
+            cv_id=TAILORED_CV_ID, source_cv_id=CV_ID,
+        )
+        _assert_application_context_href(
+            page.locator("#jb-letters .jb-linked-open"),
+            path="/cover-letters", document_id=LETTER_ID, job_id=JOB_ID,
+            cv_id=TAILORED_CV_ID, source_cv_id=CV_ID,
+        )
         with page.expect_response(lambda res: res.url.endswith("/api/build")):
             page.locator("#jb-cvs .jb-linked-pdf").click()
         with page.expect_response(lambda res: f"/api/cover-letter/{LETTER_ID}/build" in res.url):
@@ -1758,6 +2293,36 @@ def test_live_fixture_job_search_save_tailor_apply_open_and_pdf_flow(browser):
         targets = page.evaluate("window.__openedPdfTargets")
         assert len(targets) >= 2
         assert all(target != "about:blank" for target in targets)
+        opened_before_manual_handoff = list(targets)
+        page.locator("#jb-readiness-refresh").click()
+        expect(page.locator("#jb-readiness-body")).to_have_attribute("data-readiness-state", "blocked")
+        expect(page.locator("#jb-apply-confirmations")).to_be_enabled()
+        for confirmation in page.locator("[data-apply-confirmation]").all():
+            confirmation.check()
+        expect(page.locator("#jb-apply-open-confirm")).to_be_enabled()
+        with page.expect_response(lambda res: res.url.endswith(f"/api/jobs/{JOB_ID}/apply/open") and res.status == 202):
+            page.locator("#jb-apply-open-confirm").click()
+        expect(page.locator("#jb-apply-result")).to_contain_text("did not match")
+        expect(page.locator("#jb-apply-open-link")).to_be_hidden()
+        expect(page.locator("#jb-apply-confirmations")).to_be_enabled()
+        for confirmation in page.locator("[data-apply-confirmation]").all():
+            expect(confirmation).not_to_be_checked()
+            confirmation.check()
+        expect(page.locator("#jb-apply-open-confirm")).to_be_enabled()
+        with page.expect_response(lambda res: res.url.endswith(f"/api/jobs/{JOB_ID}/apply/open") and res.status == 202):
+            page.locator("#jb-apply-open-confirm").click()
+        expect(page.locator("#jb-apply-open-link")).to_be_visible()
+        # Polling form: this href is populated by the readiness fetch, so a
+        # one-shot equality read races the render that fills it in.
+        expect(page.locator("#jb-apply-open-link")).to_have_attribute(
+            "href", "https://example.test/jobs/fp-live"
+        )
+        expect(page.locator("#jb-apply-attempts")).to_contain_text("manual_open_ready")
+        expect(page.locator("#jb-apply-attempts")).to_contain_text("example.test")
+        expect(page.locator("#jb-readiness-body")).to_have_attribute("data-readiness-state", "ready")
+        assert len(state["apply_posts"]) == 2
+        assert page.evaluate("window.__openedPdfTargets") == opened_before_manual_handoff
+        assert page.url.startswith(f"{BASE_URL}/jobs")
         assert_no_horizontal_overflow(page)
         assert_clean_console(console_errors, page_errors)
         assert_clean_network(request_failures, bad_responses)
@@ -1838,7 +2403,7 @@ def test_jobs_saved_filters_and_detail_provenance(browser):
             path = urlparse(req.url).path
             if path == "/api/jobs" and req.method == "GET":
                 _json(route, {"jobs": jobs, "count": len(jobs)})
-            elif path.startswith("/api/jobs/") and req.method == "GET":
+            elif path in {f"/api/jobs/{item['id']}" for item in jobs} and req.method == "GET":
                 job_id = path.rsplit("/", 1)[-1]
                 job = next((item for item in jobs if item["id"] == job_id), None)
                 if job:
@@ -2013,6 +2578,66 @@ def test_cover_letters_saved_job_dropdown_generates_with_job_id(browser):
         context.close()
 
 
+def test_cover_letters_cv_context_switch_reloads_the_linked_job_before_generation(browser):
+    context = browser.new_context(device_scale_factor=1)
+    page = context.new_page()
+    job_b = "55555555-5555-4555-8555-555555555555"
+    cv_b = "66666666-6666-4666-8666-666666666666"
+    job_b_jd = "Title: Platform Engineer\nCompany: Beta GmbH\nKubernetes and Go required."
+    generate_bodies: list[dict] = []
+    try:
+        console_errors, page_errors, request_failures, bad_responses = _prepare_authenticated_page(page, Viewport(1440, 900))
+
+        def handle_api(route):
+            req = route.request
+            parsed = urlparse(req.url)
+            if parsed.path == "/api/cvs":
+                _json(route, {
+                    "cvs": [
+                        {"id": CV_ID, "name": "Source A"},
+                        {"id": cv_b, "name": "Tailored B", "job_id": job_b},
+                    ],
+                    "count": 2,
+                })
+            elif parsed.path == "/api/jobs" and req.method == "GET":
+                _json(route, {
+                    "jobs": [
+                        {"id": JOB_ID, "title": "Senior Data Engineer", "company": "Acme GmbH", "status": "open"},
+                        {"id": job_b, "title": "Platform Engineer", "company": "Beta GmbH", "status": "open"},
+                    ],
+                    "count": 2,
+                })
+            elif parsed.path == f"/api/jobs/{JOB_ID}" and req.method == "GET":
+                _json(route, _job_payload(False))
+            elif parsed.path == f"/api/jobs/{job_b}" and req.method == "GET":
+                payload = _job_payload(False)
+                payload["job"].update({"id": job_b, "title": "Platform Engineer", "company": "Beta GmbH", "jd_text": job_b_jd})
+                _json(route, payload)
+            elif parsed.path == "/api/documents":
+                _json(route, {"documents": [], "count": 0})
+            elif parsed.path == "/api/cover-letter/generate" and req.method == "POST":
+                generate_bodies.append(json.loads(req.post_data or "{}"))
+                _json(route, {"id": LETTER_ID, "name": "Beta letter", "body": "Grounded Beta letter."}, status=201)
+            else:
+                route.fallback()
+
+        page.route("**/api/**", handle_api)
+        _goto_authenticated(page, f"/cover-letters?job_id={JOB_ID}&cv_id={CV_ID}")
+        expect(page.locator("#cl-jd")).to_have_value(JD_TEXT)
+
+        page.locator("#cl-cv").select_option(cv_b)
+        expect(page.locator("#cl-job")).to_have_value(job_b)
+        expect(page.locator("#cl-jd")).to_have_value(job_b_jd)
+        page.locator("#cl-generate").click()
+        expect(page.locator("#cl-body")).to_have_value("Grounded Beta letter.")
+
+        assert generate_bodies == [{"cv_id": cv_b, "job_id": job_b, "tone": "auto", "recipient": ""}]
+        assert_clean_console(console_errors, page_errors)
+        assert_clean_network(request_failures, bad_responses)
+    finally:
+        context.close()
+
+
 def test_cover_letters_manual_job_override_detaches_saved_job_url(browser):
     context = browser.new_context(device_scale_factor=1)
     page = context.new_page()
@@ -2067,6 +2692,80 @@ def test_cover_letters_manual_job_override_detaches_saved_job_url(browser):
         context.close()
 
 
+def test_cover_generation_binds_output_to_dispatched_inputs(browser):
+    context = browser.new_context(device_scale_factor=1)
+    page = context.new_page()
+    generate_bodies: list[dict] = []
+    held_routes = []
+    try:
+        console_errors, page_errors, request_failures, bad_responses = _prepare_authenticated_page(page, Viewport(1440, 900))
+
+        def handle_api(route):
+            req = route.request
+            path = urlparse(req.url).path
+            if path == "/api/cvs" and req.method == "GET":
+                _json(route, {"cvs": [{"id": CV_ID, "name": "Source CV"}]})
+            elif path == "/api/jobs" and req.method == "GET":
+                _json(route, {"jobs": [], "count": 0})
+            elif path == "/api/documents" and req.method == "GET":
+                _json(route, {"documents": [], "count": 0})
+            elif path == "/api/cover-letter/generate" and req.method == "POST":
+                generate_bodies.append(json.loads(req.post_data or "{}"))
+                if len(generate_bodies) == 1:
+                    held_routes.append(route)
+                    return
+                _json(route, {
+                    "id": LETTER_ID,
+                    "name": "Acme cover letter",
+                    "body": "Grounded generated body",
+                    "company": "Acme GmbH",
+                    "role": "Senior Data Engineer",
+                    "language": "en",
+                    "updated_at": "revision-1",
+                }, status=201)
+            else:
+                route.fallback()
+
+        page.route("**/api/**", handle_api)
+        _goto_authenticated(page, "/cover-letters")
+        page.locator("#cl-jd").fill(JD_TEXT)
+        page.locator("#cl-tone").select_option("formal")
+        page.locator("#cl-recipient").fill("Alice Hiring")
+        page.locator("#cl-generate").click()
+        expect(page.locator("#cl-generate")).to_be_disabled()
+        assert generate_bodies[-1]["tone"] == "formal"
+        assert generate_bodies[-1]["recipient"] == "Alice Hiring"
+
+        page.locator("#cl-tone").select_option("concise")
+        page.locator("#cl-recipient").fill("Bob Hiring")
+        held_routes[0].fulfill(
+            status=201,
+            content_type="application/json",
+            body=json.dumps({
+                "id": "77777777-7777-4777-8777-777777777777",
+                "name": "Superseded letter",
+                "body": "Superseded generated body",
+                "company": "Acme GmbH",
+                "role": "Senior Data Engineer",
+                "language": "en",
+                "updated_at": "superseded-revision",
+            }),
+        )
+        expect(page.locator("#cl-generate")).to_be_enabled()
+        expect(page.locator("#cl-result-name")).to_have_text("No letter selected")
+
+        page.locator("#cl-generate").click()
+        expect(page.locator("#cl-body")).to_have_value("Grounded generated body")
+        expect(page.locator("#cl-envelope-recipient")).to_have_value("Bob Hiring")
+        expect(page.locator("#cl-envelope-tone")).to_have_value("concise")
+        assert generate_bodies[-1]["tone"] == "concise"
+        assert generate_bodies[-1]["recipient"] == "Bob Hiring"
+        assert_clean_console(console_errors, page_errors)
+        assert_clean_network(request_failures, bad_responses)
+    finally:
+        context.close()
+
+
 @pytest.mark.parametrize("viewport", [Viewport(1440, 900), Viewport(820, 800), Viewport(390, 844)], ids=lambda v: v.label)
 def test_cover_letter_selected_body_and_pdf_controls_are_reachable(browser, viewport: Viewport):
     context = browser.new_context(device_scale_factor=1)
@@ -2097,6 +2796,11 @@ def test_cover_letter_selected_body_and_pdf_controls_are_reachable(browser, view
                 })
             elif parsed.path == "/api/jobs" and route.request.method == "GET":
                 _json(route, {"jobs": [], "count": 0})
+            elif parsed.path == f"/api/jobs/{JOB_ID}" and route.request.method == "GET":
+                # The deep-linked document synchronizes its saved-job context
+                # on load and again when opened from the library. Keep that
+                # read inside this test's deterministic API surface.
+                _json(route, _job_payload(False))
             elif parsed.path == "/api/cover-letter" and route.request.method == "GET":
                 _json(route, {
                     "id": LETTER_ID,
@@ -2124,6 +2828,26 @@ def test_cover_letter_selected_body_and_pdf_controls_are_reachable(browser, view
         page.route("**/api/**", handle_api)
         _goto_authenticated(page, f"/cover-letters?id={LETTER_ID}")
         expect(page.locator('.cl-lib-row[data-packet-state="packet_created"]')).to_have_count(1)
+        if viewport.width <= 840:
+            scroll_state = page.locator(".cl-main").evaluate(
+                """
+                el => ({
+                  overflowY: getComputedStyle(el).overflowY,
+                  scrollTop: el.scrollTop,
+                  scrollHeight: el.scrollHeight,
+                  clientHeight: el.clientHeight,
+                })
+                """
+            )
+            assert scroll_state["overflowY"] == "auto"
+            assert scroll_state["scrollHeight"] > scroll_state["clientHeight"]
+            page.locator(".cl-main").hover(position={"x": 20, "y": 120})
+            page.mouse.wheel(0, 2000)
+            page.wait_for_function(
+                "(before) => document.querySelector('.cl-main').scrollTop > before",
+                arg=scroll_state["scrollTop"],
+            )
+            assert_inside_viewport(page, [".cl-lib-open"])
         page.locator(".cl-lib-open").click()
         expect(page.locator("#cl-body")).to_have_value(re.compile("Spark and Airflow"))
         expect(page.locator("#cl-packet-lineage")).to_be_visible()
@@ -2133,6 +2857,11 @@ def test_cover_letter_selected_body_and_pdf_controls_are_reachable(browser, view
         expect(page.locator("#cl-save")).to_be_visible()
         expect(page.locator("#cl-download")).to_be_visible()
         expect(page.locator("#cl-wordcount")).to_contain_text("word")
+        if viewport.width <= 840:
+            # The physical wheel above, rather than Playwright's automatic
+            # locator scrolling, must make the selected document controls
+            # reachable to an actual pointer/trackpad user.
+            assert_inside_viewport(page, ["#cl-save", "#cl-download", "#cl-body", "#cl-wordcount"])
         page.locator("#cl-save").scroll_into_view_if_needed()
         assert_inside_viewport(page, ["#cl-save", "#cl-download"])
         page.locator("#cl-body").scroll_into_view_if_needed()
@@ -2153,8 +2882,105 @@ def test_cover_letter_selected_body_and_pdf_controls_are_reachable(browser, view
         targets = page.evaluate("window.__openedPdfTargets")
         assert targets and all(target != "about:blank" for target in targets)
         expect(page.locator("#cl-preview")).to_be_visible()
+        if viewport.width <= 840:
+            main_scroll = page.evaluate(
+                """
+                () => {
+                  const main = document.querySelector(".cl-main");
+                  return {
+                    rectLeft: Math.round(main.getBoundingClientRect().left),
+                    scrollLeft: main.scrollLeft,
+                    overflowX: getComputedStyle(main).overflowX,
+                  };
+                }
+                """
+            )
+            assert main_scroll["rectLeft"] == 0
+            assert main_scroll["scrollLeft"] == 0
+            assert main_scroll["overflowX"] in {"clip", "hidden"}
         assert_clean_console(console_errors, page_errors)
         assert_clean_network(request_failures, bad_responses)
+    finally:
+        context.close()
+
+
+def test_cover_letter_save_queue_advances_partial_success_revision(browser):
+    context = browser.new_context(device_scale_factor=1)
+    page = context.new_page()
+    posts: list[dict] = []
+    held_routes = []
+    try:
+        console_errors, page_errors, request_failures, bad_responses = _prepare_authenticated_page(page, Viewport(1440, 900))
+
+        def handle_api(route):
+            req = route.request
+            path = urlparse(req.url).path
+            if path == "/api/cvs" and req.method == "GET":
+                _json(route, {"cvs": [{"id": CV_ID, "name": "Source CV"}]})
+            elif path == "/api/jobs" and req.method == "GET":
+                _json(route, {"jobs": [], "count": 0})
+            elif path == "/api/documents" and req.method == "GET":
+                _json(route, {
+                    "documents": [{"id": LETTER_ID, "type": "cover_letter", "name": "Queued save letter"}],
+                    "count": 1,
+                })
+            elif path == "/api/cover-letter" and req.method == "GET":
+                _json(route, {
+                    "id": LETTER_ID,
+                    "name": "Queued save letter",
+                    "body": "Initial body",
+                    "updated_at": "revision-1",
+                })
+            elif path == "/api/cover-letter" and req.method == "POST":
+                posts.append(json.loads(req.post_data or "{}"))
+                if len(posts) == 1:
+                    held_routes.append(route)
+                    return
+                _json(route, {
+                    "saved": True,
+                    "id": LETTER_ID,
+                    "updated_at": "revision-3",
+                })
+            elif path == f"/api/cover-letter/{LETTER_ID}/preview":
+                route.fulfill(status=200, content_type="text/html", body="<article>Latest saved body</article>")
+            else:
+                route.fallback()
+
+        page.route("**/api/**", handle_api)
+        _goto_authenticated(page, f"/cover-letters?id={LETTER_ID}")
+        expect(page.locator("#cl-body")).to_have_value("Initial body")
+
+        page.locator("#cl-body").fill("First snapshot")
+        page.locator("#cl-save").click()
+        expect(page.locator("#cl-save")).to_be_disabled()
+        assert len(posts) == 1
+        assert posts[0]["body"] == "First snapshot"
+        assert posts[0]["revision"] == "revision-1"
+
+        page.locator("#cl-body").fill("Latest snapshot")
+        page.locator("#cl-preview-toggle").click()
+        page.wait_for_timeout(50)
+        assert len(posts) == 1
+
+        held_routes[0].fulfill(
+            status=503,
+            content_type="application/json",
+            body=json.dumps({
+                "error": "Letter saved; stale PDF cleanup is pending.",
+                "code": "artifact_cleanup_unavailable",
+                "document_updated": True,
+                "updated_at": "revision-2",
+            }),
+        )
+
+        expect(page.locator("#cl-preview")).to_be_visible()
+        expect(page.locator("#cl-save")).to_be_enabled()
+        assert len(posts) == 2
+        assert posts[1]["body"] == "Latest snapshot"
+        assert posts[1]["revision"] == "revision-2"
+        console_errors[:] = [err for err in console_errors if "status of 503" not in err]
+        assert_clean_console(console_errors, page_errors)
+        assert_clean_network(request_failures, bad_responses, allow_statuses=(503,))
     finally:
         context.close()
 

@@ -32,7 +32,7 @@ __CHROME_TOPBAR__
       <!-- Left: the catalog grid (chips + search + add-job + cards) -->
       <section class="cl-pane jb-catalog-pane jb-search-sidebar" aria-label="Jobs search and catalog filters" data-i18n-attr="aria-label:jobs.catalog_aria">
         <!-- Add a job (collapsible so the grid stays primary) -->
-        <details id="jb-add-details" class="jb-add-details" open>
+        <details id="jb-add-details" class="jb-add-details">
           <summary class="jb-add-summary">
             <span data-icon="plus-circle" data-icon-size="15"></span>
             <span data-i18n="jobs.add.summary">Save a job</span>
@@ -188,7 +188,6 @@ __CHROME_TOPBAR__
             <button type="button" class="jb-chip" data-filter="has_cover" aria-pressed="false" data-i18n="jobs.filter.has_cover">Has cover</button>
             <button type="button" class="jb-chip" data-filter="open" aria-pressed="false" data-i18n="jobs.status.open">Open</button>
             <button type="button" class="jb-chip" data-filter="speculative" aria-pressed="false" data-i18n="jobs.status.speculative">Speculative</button>
-            <button type="button" class="jb-chip" data-filter="applied" aria-pressed="false" data-i18n="jobs.status.applied">Applied</button>
           </div>
           <div class="jb-controls-right">
             <input id="jb-search" class="cl-input jb-search" type="search"
@@ -289,9 +288,9 @@ __CHROME_TOPBAR__
       <section class="cl-pane cl-result-pane jb-detail-pane jb-results-panel" aria-label="Job detail" data-i18n-attr="aria-label:jobs.detail_aria">
         <div id="jb-detail-empty" class="tl-empty">
           <span data-icon="briefcase" data-icon-size="30" class="muted"></span>
-          <p class="muted" data-i18n="jobs.detail.empty">
-            Select a job from the catalog to see its details, tailor a CV to it,
-            and generate a matching cover letter.
+          <p id="jb-detail-empty-copy" class="muted" data-jb-copy="detail_empty">
+            Select a job. Then choose a source CV, review grounded changes,
+            create the CV + letter packet, and clear readiness blockers.
           </p>
         </div>
 
@@ -322,11 +321,10 @@ __CHROME_TOPBAR__
                 <option value="saved" data-i18n="jobs.status.saved">Saved</option>
                 <option value="open" data-i18n="jobs.status.open">Open</option>
                 <option value="speculative" data-i18n="jobs.status.speculative">Speculative</option>
-                <option value="applied" data-i18n="jobs.status.applied">Applied</option>
                 <option value="closed" data-i18n="jobs.status.closed">Closed</option>
               </select>
               <button id="jb-delete" type="button" class="cl-btn jb-del-btn" aria-label="Delete job"
-                      data-tooltip="Delete this job (your tailored docs are kept)"
+                      data-tooltip="Delete this unused job"
                       data-i18n-attr="aria-label:jobs.delete_aria,data-tooltip:jobs.delete_tooltip">
                 <span data-icon="trash" data-icon-size="13"></span>
               </button>
@@ -353,55 +351,150 @@ __CHROME_TOPBAR__
           </div>
           <div id="jb-experience-fit" class="jb-experience-fit" aria-label="Experience fit evidence" data-i18n-attr="aria-label:jobs.experience.aria"></div>
 
-          <div class="jb-oneclick">
-            <label class="cl-label" for="jb-source-cv" data-i18n="jobs.detail.source_cv">Source CV for one-click generate</label>
-            <div class="jb-oneclick-row">
-              <select id="jb-source-cv" class="cl-select" aria-label="Source CV" data-i18n-attr="aria-label:jobs.source_cv_aria"></select>
-              <button id="jb-generate" type="button" class="cl-btn cl-btn-primary jb-generate-btn">
-                <span data-icon="sparkles" data-icon-size="14"></span>
-                <span class="jb-generate-label" data-i18n="jobs.generate.full">Generate CV + cover letter</span>
-              </button>
-              <button id="jb-review" type="button" class="cl-btn jb-review-btn">
-                <span data-icon="scan-search" data-icon-size="14"></span>
-                <span class="jb-review-label" data-i18n="jobs.review.first">Review first</span>
-              </button>
-            </div>
-            <p class="cl-sub muted jb-oneclick-note" data-i18n="jobs.detail.note">
-              Tailors a copy of that CV to this job and writes a cover letter
-              grounded only in your CV. Invented facts and 2-page CVs are blocked.
-            </p>
-            <div id="jb-review-panel" class="jb-review-panel" hidden>
-              <div class="jb-review-head">
-                <strong data-i18n="jobs.review.heading">Reviewed CV changes</strong>
-                <button id="jb-apply-review" type="button" class="cl-btn cl-btn-primary">
-                  <span data-icon="check" data-icon-size="14"></span>
-                  <span class="jb-apply-label" data-i18n="jobs.packet.create">Create packet</span>
+          <section class="jb-application-studio" aria-labelledby="jb-studio-heading">
+            <header class="jb-studio-head">
+              <div>
+                <h3 id="jb-studio-heading" class="cl-h3" data-jb-copy="studio_title">Application Studio</h3>
+                <p class="cl-sub muted" data-jb-copy="studio_intro">
+                  One connected, review-first path. Nothing is submitted automatically.
+                </p>
+              </div>
+            </header>
+
+            <ol id="jb-application-flow" class="jb-application-flow" aria-label="Application build progress" data-jb-copy-attr="aria-label:flow_aria">
+              <li data-flow-stage="job" data-flow-state="current">
+                <span class="jb-flow-index" aria-hidden="true">1</span>
+                <span data-jb-copy="flow_job">Job</span>
+              </li>
+              <li data-flow-stage="source" data-flow-state="pending">
+                <span class="jb-flow-index" aria-hidden="true">2</span>
+                <span data-jb-copy="flow_source">Source CV</span>
+              </li>
+              <li data-flow-stage="review" data-flow-state="pending">
+                <span class="jb-flow-index" aria-hidden="true">3</span>
+                <span data-jb-copy="flow_review">Review</span>
+              </li>
+              <li data-flow-stage="packet" data-flow-state="pending">
+                <span class="jb-flow-index" aria-hidden="true">4</span>
+                <span data-jb-copy="flow_packet">CV + letter</span>
+              </li>
+              <li data-flow-stage="ready" data-flow-state="pending">
+                <span class="jb-flow-index" aria-hidden="true">5</span>
+                <span data-jb-copy="flow_ready">Ready</span>
+              </li>
+            </ol>
+
+            <div class="jb-oneclick">
+              <label id="jb-source-cv-label" class="cl-label" for="jb-source-cv" data-jb-copy="source_cv_label">2. Choose the source CV</label>
+              <div class="jb-oneclick-row">
+                <select id="jb-source-cv" class="cl-select" aria-label="Source CV" data-i18n-attr="aria-label:jobs.source_cv_aria"></select>
+                <button id="jb-generate" type="button" class="cl-btn cl-btn-primary jb-generate-btn">
+                  <span data-icon="sparkles" data-icon-size="14"></span>
+                  <span class="jb-generate-label" data-jb-copy="build_application">Build application</span>
+                </button>
+                <!-- Compatibility hook for older static contracts. The visible canonical
+                     action above always starts the same review-first flow. -->
+                <button id="jb-review" type="button" class="cl-btn jb-review-btn" hidden aria-hidden="true" tabindex="-1">
+                  <span data-icon="scan-search" data-icon-size="14"></span>
+                  <span class="jb-review-label" data-i18n="jobs.review.first">Review first</span>
                 </button>
               </div>
-              <p id="jb-review-summary" class="muted"></p>
-              <div id="jb-review-lineage" class="jb-review-lineage"></div>
-              <div id="jb-review-before-after" class="jb-review-before-after"></div>
-              <div id="jb-post-tailor-ats" class="jb-review-post-ats"></div>
-              <div id="jb-review-years-fit" class="jb-review-years-fit"></div>
-              <div id="jb-cover-grounding-status" class="jb-cover-grounding"></div>
-              <label id="jb-cover-review-panel" class="jb-cover-review-panel" hidden>
-                <input id="jb-approve-cover-review" type="checkbox" />
-                <span data-i18n="jobs.review.cover_confirm">Cover letter grounding reviewed against the tailored CV</span>
-              </label>
-              <pre id="jb-review-diff" class="jb-review-diff"></pre>
+              <p class="cl-sub muted jb-oneclick-note" data-jb-copy="build_note">
+                First review grounded CV changes. Only after approval is the linked CV + cover-letter packet created.
+              </p>
+              <div id="jb-review-panel" class="jb-review-panel" hidden>
+                <div class="jb-review-head">
+                  <strong data-i18n="jobs.review.heading">Reviewed CV changes</strong>
+                  <button id="jb-apply-review" type="button" class="cl-btn cl-btn-primary">
+                    <span data-icon="check" data-icon-size="14"></span>
+                    <span class="jb-apply-label" data-i18n="jobs.packet.create">Create packet</span>
+                  </button>
+                </div>
+                <p id="jb-review-summary" class="muted"></p>
+                <div id="jb-review-lineage" class="jb-review-lineage"></div>
+                <div id="jb-review-before-after" class="jb-review-before-after"></div>
+                <div id="jb-post-tailor-ats" class="jb-review-post-ats"></div>
+                <div id="jb-review-years-fit" class="jb-review-years-fit"></div>
+                <div id="jb-cover-grounding-status" class="jb-cover-grounding"></div>
+                <label id="jb-cover-review-panel" class="jb-cover-review-panel" hidden>
+                  <input id="jb-approve-cover-review" type="checkbox" />
+                  <span data-i18n="jobs.review.cover_confirm">Cover letter grounding reviewed against the tailored CV</span>
+                </label>
+                <pre id="jb-review-diff" class="jb-review-diff"></pre>
+              </div>
             </div>
-          </div>
 
-          <div id="jb-gen-feedback" class="cl-feedback" role="status" aria-live="polite" hidden></div>
+            <div id="jb-gen-feedback" class="cl-feedback" role="status" aria-live="polite" hidden></div>
 
-          <div class="jb-linked" aria-label="Application packet" data-i18n-attr="aria-label:jobs.packet.aria">
-            <h3 class="cl-h3 jb-packet-title" data-i18n="jobs.packet.title">Application packet</h3>
-            <div id="jb-packet-state" class="jb-packet-state" aria-live="polite"></div>
-            <h4 class="jb-linked-subhead" data-i18n="jobs.linked.cvs">Tailored CVs</h4>
-            <div id="jb-cvs" class="cl-list"></div>
-            <h4 class="jb-linked-subhead jb-linked-h" data-i18n="jobs.linked.letters">Cover letters</h4>
-            <div id="jb-letters" class="cl-list"></div>
-          </div>
+            <div class="jb-linked" aria-label="Application packet" data-i18n-attr="aria-label:jobs.packet.aria">
+              <h3 class="cl-h3 jb-packet-title" data-i18n="jobs.packet.title">Application packet</h3>
+              <div id="jb-packet-state" class="jb-packet-state" aria-live="polite"></div>
+              <h4 class="jb-linked-subhead" data-i18n="jobs.linked.cvs">Tailored CVs</h4>
+              <div id="jb-cvs" class="cl-list"></div>
+              <h4 class="jb-linked-subhead jb-linked-h" data-i18n="jobs.linked.letters">Cover letters</h4>
+              <div id="jb-letters" class="cl-list"></div>
+            </div>
+
+            <section id="jb-apply-readiness" class="jb-apply-readiness" aria-labelledby="jb-readiness-heading">
+              <header class="jb-readiness-head">
+                <div>
+                  <h3 id="jb-readiness-heading" class="cl-h3" data-jb-copy="readiness_title">5. Application readiness</h3>
+                  <p class="cl-sub muted" data-jb-copy="readiness_intro">Backend-verified blockers and manual-handoff evidence.</p>
+                </div>
+                <button id="jb-readiness-refresh" type="button" class="cl-btn jb-readiness-refresh">
+                  <span data-icon="refresh-cw" data-icon-size="13"></span>
+                  <span data-jb-copy="refresh">Refresh</span>
+                </button>
+              </header>
+
+              <div id="jb-readiness-body" class="jb-readiness-body" aria-busy="true">
+                <p id="jb-readiness-summary" class="jb-readiness-summary muted" role="status" aria-live="polite" data-jb-copy="readiness_loading">Checking readiness…</p>
+                <div id="jb-readiness-target" class="jb-readiness-target"></div>
+                <div id="jb-readiness-blockers" class="jb-readiness-blockers"></div>
+                <div id="jb-readiness-evidence" class="jb-readiness-evidence"></div>
+                <div id="jb-apply-attempts" class="jb-apply-attempts"></div>
+              </div>
+
+              <fieldset id="jb-apply-confirmations" class="jb-apply-confirmations" disabled>
+                <legend data-jb-copy="confirm_legend">Explicit manual-open confirmations</legend>
+                <label>
+                  <input id="jb-confirm-user" type="checkbox" data-apply-confirmation="user_confirmed" />
+                  <span data-jb-copy="confirm_user">I understand this only prepares a manual external-page handoff; it does not submit.</span>
+                </label>
+                <label>
+                  <input id="jb-confirm-reviewed" type="checkbox" data-apply-confirmation="reviewed_packet_confirmed" />
+                  <span data-jb-copy="confirm_reviewed">I reviewed the tailored CV and cover letter in this packet.</span>
+                </label>
+                <label>
+                  <input id="jb-confirm-profile" type="checkbox" data-apply-confirmation="profile_answers_complete" />
+                  <span data-jb-copy="confirm_profile">Required profile answers are complete and accurate.</span>
+                </label>
+                <label>
+                  <input id="jb-confirm-legal" type="checkbox" data-apply-confirmation="legal_answers_confirmed" />
+                  <span data-jb-copy="confirm_legal">I confirmed all legal declarations myself.</span>
+                </label>
+                <label>
+                  <input id="jb-confirm-visa" type="checkbox" data-apply-confirmation="visa_answers_confirmed" />
+                  <span data-jb-copy="confirm_visa">I confirmed visa and work-authorization answers myself.</span>
+                </label>
+              </fieldset>
+
+              <div class="jb-manual-open-actions">
+                <button id="jb-apply-open-confirm" type="button" class="cl-btn cl-btn-primary" disabled>
+                  <span data-icon="shield" data-icon-size="14"></span>
+                  <span class="jb-apply-open-label" data-jb-copy="confirm_open">Confirm manual open</span>
+                </button>
+                <a id="jb-apply-open-link" class="cl-btn jb-apply-open-link" href="#" target="_blank" rel="noopener noreferrer" hidden>
+                  <span data-icon="external-link" data-icon-size="13"></span>
+                  <span data-jb-copy="open_external">Open application page</span>
+                </a>
+              </div>
+              <p class="jb-manual-open-note muted" data-jb-copy="manual_only">
+                Manual handoff only. This app never fills or submits the external form.
+              </p>
+              <div id="jb-apply-result" class="jb-apply-result" role="status" aria-live="polite" hidden></div>
+            </section>
+          </section>
 
           <details class="jb-jd-details">
             <summary data-i18n="jobs.field.jd">Job description</summary>

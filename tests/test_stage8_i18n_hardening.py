@@ -302,7 +302,7 @@ class TestI18nStringTable:
         assert data["lang"] == "de"
         strings = data["strings"]
         assert strings["account.profile.heading"] == "Profil"
-        assert strings["jobs.status.applied"] == "Beworben"
+        assert strings["jobs.status.applied"] == "Ungeprüfter alter Bewerbungsvermerk"
         assert strings["lib.badge.cover"] == "Anschreiben"
 
     def test_static_account_jobs_i18n_references_exist(self):
@@ -422,7 +422,7 @@ class TestPagesWired:
 
         assert 'class="tool-page-head"' in jobs_html
         assert 'id="jobs-page-heading"' in jobs_html
-        assert 'class="tool-page-head"' in letters_html
+        assert 'class="tool-page-head application-studio-head"' in letters_html
         assert 'id="letters-page-heading"' in letters_html
         assert 'class="cl-library-panel"' in letters_html
         assert letters_html.index('for="cl-cv"') < letters_html.index('id="cl-generate"')

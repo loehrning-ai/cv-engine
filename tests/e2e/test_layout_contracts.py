@@ -1221,6 +1221,7 @@ def test_navbar_ia_keeps_command_search_out_of_primary_chrome(browser):
         assert chrome["order"]["appearance"]["right"] <= chrome["order"]["doc"]["left"] + 1
         assert chrome["order"]["doc"]["right"] <= chrome["order"]["workflow"]["left"] + 1
 
+        wait_for_editor_shell_ready(page)
         for route in ["/jobs", "/cover-letters", "/tailor", "/account"]:
             goto_route(page, route, Viewport(1440, 900))
             page.wait_for_selector(".cl-topbar")
@@ -2270,7 +2271,7 @@ def test_jobs_filter_sidebar_layout_with_long_titles_across_viewports(browser, v
             if path == "/api/jobs" and route.request.method == "GET":
                 route.fulfill(status=200, content_type="application/json", body=json.dumps({"jobs": jobs, "count": len(jobs)}))
                 return
-            if path.startswith("/api/jobs/") and route.request.method == "GET":
+            if path in {f"/api/jobs/{item['id']}" for item in jobs} and route.request.method == "GET":
                 job_id = path.rsplit("/", 1)[-1]
                 job = next((item for item in jobs if item["id"] == job_id), jobs[0])
                 route.fulfill(status=200, content_type="application/json", body=json.dumps({"job": job, "cvs": [], "cover_letters": []}))
@@ -2757,6 +2758,7 @@ def test_all_editor_sections_collapse_expand_keyboard_and_persist(browser):
     context, page, console_errors, page_errors = new_page(browser)
     try:
         goto_route(page, "/app", Viewport(1440, 900))
+        wait_for_editor_shell_ready(page)
         page.wait_for_selector(".form-section-head.is-collapsible")
         page.locator("#collapse-all-btn").click()
         page.wait_for_function(
@@ -2779,7 +2781,7 @@ def test_all_editor_sections_collapse_expand_keyboard_and_persist(browser):
         stored = page.evaluate("(id) => localStorage.getItem('cv.editor.collapsed::' + id)", key)
         assert stored and stored != "{}"
         page.reload(wait_until="domcontentloaded")
-        page.wait_for_load_state("networkidle")
+        wait_for_editor_shell_ready(page)
         page.wait_for_function(
             """
             () => {
@@ -2904,6 +2906,77 @@ def test_all_editor_sections_collapse_expand_keyboard_and_persist(browser):
         de_label = page.locator("#collapse-all-btn .collapse-all-label").inner_text().strip()
         assert de_label == "Alle ausklappen"
         assert "ausklappen" in (page.locator("#collapse-all-btn").get_attribute("aria-label") or "").lower()
+        assert_clean_console(console_errors, page_errors)
+    finally:
+        context.close()
+
+
+def test_editor_focus_mode_navigates_one_section_and_overview_restores_all(browser):
+    context, page, console_errors, page_errors = new_page(browser)
+    try:
+        goto_route(page, "/app", Viewport(1440, 900))
+        wait_for_editor_shell_ready(page)
+        total = page.locator("#form-host .form-section[data-section-key]").count()
+        assert total > 1
+
+        page.locator('.form-mode-btn[data-form-mode="focus"]').click()
+        expect(page.locator("body")).to_have_attribute("data-form-mode", "focus")
+        expect(page.locator('.form-mode-btn[data-form-mode="focus"]')).to_have_attribute("aria-pressed", "true")
+        expect(page.locator("#focus-section-nav")).to_be_visible()
+        expect(page.locator("#form-host .form-section[data-section-key]:not([hidden])")).to_have_count(1)
+
+        first_key = page.locator("#form-host .form-section[data-section-key]:not([hidden])").get_attribute("data-section-key")
+        first_progress = int(page.locator("#focus-section-progress").get_attribute("aria-valuenow"))
+        page.locator("#focus-section-next").click()
+        expect(page.locator("#form-host .form-section[data-section-key]:not([hidden])")).to_have_count(1)
+        second_key = page.locator("#form-host .form-section[data-section-key]:not([hidden])").get_attribute("data-section-key")
+        second_progress = int(page.locator("#focus-section-progress").get_attribute("aria-valuenow"))
+        assert second_key != first_key
+        assert second_progress == first_progress + 1
+
+        target_outline = page.locator(".outline-item[data-slug]").nth(3)
+        target_key = target_outline.get_attribute("data-slug")
+        target_outline.click()
+        expect(page.locator(f'.form-section[data-section-key="{target_key}"]')).to_be_visible()
+        expect(page.locator(f'.outline-item[data-slug="{target_key}"]')).to_have_class(re.compile(r"\bactive\b"))
+        stored = page.evaluate(
+            """
+            () => {
+              const key = Object.keys(localStorage).find((item) => item.startsWith("cv.editor.activeSection::"));
+              return {
+                mode: localStorage.getItem("cv.editor.formMode"),
+                active: key ? [key, localStorage.getItem(key)] : null,
+              };
+            }
+            """
+        )
+        assert stored["mode"] == "focus"
+        assert stored["active"] and stored["active"][1] == target_key
+
+        page.locator('.form-mode-btn[data-form-mode="overview"]').click()
+        expect(page.locator("body")).to_have_attribute("data-form-mode", "overview")
+        expect(page.locator("#focus-section-nav")).to_be_hidden()
+        expect(page.locator("#form-host .form-section[data-section-key]:not([hidden])")).to_have_count(total)
+
+        collapse_head = page.locator("#form-host .form-section-head.is-collapsible").first
+        collapsed_key = collapse_head.evaluate(
+            "node => node.closest('.form-section[data-section-key]').dataset.sectionKey"
+        )
+        collapse_body = collapse_head.locator(
+            "xpath=following-sibling::*[contains(concat(' ', normalize-space(@class), ' '), ' form-section-body ')][1]"
+        )
+        collapse_head.click()
+        expect(collapse_body).to_be_hidden()
+        page.locator('.form-mode-btn[data-form-mode="focus"]').click()
+        page.locator(f'.outline-item[data-slug="{collapsed_key}"]').click()
+        expect(collapse_body).to_be_visible()
+        page.locator('.form-mode-btn[data-form-mode="overview"]').click()
+        expect(collapse_body).to_be_hidden()
+
+        page.set_viewport_size({"width": 390, "height": 844})
+        page.locator('.form-mode-btn[data-form-mode="focus"]').click()
+        expect(page.locator("#form-host .form-section[data-section-key]:not([hidden])")).to_have_count(1)
+        assert_no_horizontal_overflow(page)
         assert_clean_console(console_errors, page_errors)
     finally:
         context.close()
@@ -3319,10 +3392,23 @@ def test_form_view_stack_boundary_across_plan_096_widths(browser, viewport: View
         context.close()
 
 
+@pytest.mark.no_retry
 @pytest.mark.parametrize("viewport", [Viewport(1440, 900), Viewport(820, 800), Viewport(390, 844), Viewport(320, 740)], ids=lambda v: v.label)
 def test_repeated_item_and_bullet_reorder_controls_are_reachable(browser, viewport: Viewport):
     context, page, console_errors, page_errors = new_page(browser)
+
+    def handle_cv_save(route):
+        parsed = urlparse(route.request.url)
+        if parsed.path == "/api/cv" and route.request.method == "POST":
+            route.fulfill(status=200, content_type="application/json", body='{"ok":true}')
+            return
+        route.fallback()
+
     try:
+        # Exercise the complete autosave path without mutating the module-wide
+        # local demo CV. Retries and later viewport cases must start from the
+        # same backend state as the first attempt.
+        page.route("**/api/cv*", handle_cv_save)
         goto_route(page, "/app", viewport)
         page.evaluate(
             """() => {
@@ -3391,15 +3477,7 @@ def test_repeated_item_and_bullet_reorder_controls_are_reachable(browser, viewpo
         remove_bullet.press("Enter")
         expect(card.locator(".bullet-row .bullet-input").first).to_be_visible()
         assert_no_blocked_writes(page)
-        # Rapid edits fire autosave + preview save-first concurrently; the app
-        # has no in-flight save mutex, so one POST /api/cv can legitimately
-        # lose the optimistic-lock race and 409. The app handles that by
-        # design (recoverable conflict toast, conflictPending gate) — but the
-        # browser still auto-logs the 409 as a console resource error. That
-        # specific line is not an app malfunction, so filter it HERE ONLY
-        # (not in the shared assert) and keep everything else strict.
-        benign_conflict = [err for err in console_errors if "status of 409" not in err]
-        assert_clean_console(benign_conflict, page_errors)
+        assert_clean_console(console_errors, page_errors)
     finally:
         context.close()
 
@@ -3409,7 +3487,12 @@ def test_editor_longform_fields_and_bullets_wrap_without_horizontal_clipping(bro
     context, page, console_errors, page_errors = new_page(browser)
     try:
         goto_route(page, "/app", viewport)
-        page.wait_for_selector(".form-host")
+        # .form-host exists before the async CV load rebuilds the form. Wait
+        # for the loaded editor shell and the two controls this contract
+        # measures so an initial empty-model render cannot race the assertion.
+        wait_for_editor_shell_ready(page)
+        page.wait_for_selector(".form-field textarea", state="visible")
+        page.wait_for_selector(".bullet-input", state="visible")
         metrics = page.evaluate(
             """
             () => {
@@ -3485,7 +3568,9 @@ def test_workflow_primary_actions_are_in_first_viewport_or_sticky(browser, viewp
     try:
         checks = [
             ("/cover-letters", "#cl-generate"),
-            ("/jobs", "#jb-add"),
+            # The collapsed add-job disclosure is the first-view action. The
+            # submit button is intentionally hidden until the user opens it.
+            ("/jobs", "#jb-add-details > summary"),
             ("/tailor", "#tl-score"),
             ("/tailor", "#tl-tailor"),
         ]
@@ -3774,6 +3859,11 @@ def test_rendered_cv_raster_matrix_has_pixels_and_one_page_geometry(browser, cas
     context, page, console_errors, page_errors = new_page(browser)
     try:
         goto_route(page, "/app", Viewport(900, 1300))
+        # The editor starts an authenticated preview fetch during boot. Let
+        # that cycle finish before replacing the /app document with the raster
+        # fixture; otherwise navigation aborts the in-flight fetch and the old
+        # realm correctly reports ``TypeError: Failed to fetch`` to the console.
+        wait_for_preview_idle(page)
         token = page.evaluate(
             """
             () => window.OnePagerAuth &&
@@ -4093,3 +4183,256 @@ def test_plan108_topbar_no_clip_with_unsaved_state_and_logout(browser, lang: str
             assert_no_horizontal_overflow(page)
         finally:
             context.close()
+
+
+TOOL_PAGE_HEAD_ROUTES = ["/cover-letters", "/tailor", "/jobs"]
+
+TOOL_PAGE_HEAD_VIEWPORTS = [
+    Viewport(1440, 900),
+    Viewport(900, 760),
+    Viewport(760, 800),
+    Viewport(430, 932),
+    Viewport(390, 844),
+    Viewport(320, 740),
+]
+
+TOOL_PAGE_HEAD_PROBE = """
+() => {
+  const head = document.querySelector(".tool-page-head");
+  if (!head) return null;
+  const rect = (el) => {
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return {
+      left: r.left, right: r.right, top: r.top, bottom: r.bottom,
+      width: r.width, height: r.height,
+    };
+  };
+  const headStyle = getComputedStyle(head);
+  const lifecycle = document.querySelector(".application-lifecycle");
+  const steps = Array.from(document.querySelectorAll(".application-lifecycle li"));
+  return {
+    head: rect(head),
+    headOverflowX: head.scrollWidth - head.clientWidth,
+    rowGap: parseFloat(headStyle.rowGap) || 0,
+    flexDirection: headStyle.flexDirection,
+    flexWrap: headStyle.flexWrap,
+    sub: rect(document.querySelector(".tool-page-sub")),
+    status: rect(document.querySelector(".tool-page-status")),
+    lifecycle: lifecycle
+      ? {
+          ...rect(lifecycle),
+          scrollWidth: lifecycle.scrollWidth,
+          clientWidth: lifecycle.clientWidth,
+          overflowX: getComputedStyle(lifecycle).overflowX,
+        }
+      : null,
+    lastStep: rect(steps[steps.length - 1] || null),
+    viewportWidth: window.innerWidth,
+    viewportHeight: window.innerHeight,
+    docScrollWidth: document.documentElement.scrollWidth,
+  };
+}
+"""
+
+
+@pytest.mark.parametrize("route", TOOL_PAGE_HEAD_ROUTES)
+@pytest.mark.parametrize("viewport", TOOL_PAGE_HEAD_VIEWPORTS, ids=lambda v: v.label)
+def test_tool_page_head_is_bounded_and_fully_contained(browser, route: str, viewport: Viewport):
+    """The shared page head must never inflate or lay content out off-canvas.
+
+    `.tool-page-head` flips to `flex-direction: column` at <=760px. Flex basis
+    always follows the main axis, so a row-axis `flex: <g> <s> <length|%>` left
+    on a child silently becomes a HEIGHT there, and a surviving `flex-wrap:
+    wrap` turns the stack into a multi-column layout whose extra columns land
+    outside the viewport. Both failures are invisible to page-level overflow
+    checks — `.cl-main` clips the overflow and `document.scrollWidth` stays
+    clean — so this asserts the head's own geometry instead.
+    """
+    context, page, console_errors, page_errors = new_page(browser)
+    try:
+        goto_route(page, route, viewport)
+        page.wait_for_selector(".tool-page-head")
+        probe = page.evaluate(TOOL_PAGE_HEAD_PROBE)
+        assert probe is not None, route
+        context_msg = {"route": route, "viewport": viewport.label, "probe": probe}
+
+        # Nothing inside the head may be laid out beyond its own client box.
+        assert probe["headOverflowX"] <= 1, context_msg
+        assert probe["head"]["left"] >= -0.5, context_msg
+        assert probe["head"]["right"] <= probe["viewportWidth"] + 0.5, context_msg
+        assert probe["docScrollWidth"] <= probe["viewportWidth"] + 1, context_msg
+
+        if viewport.width <= 760:
+            assert probe["flexDirection"] == "column", context_msg
+            # A column stack must not wrap — wrapping opens off-canvas columns.
+            assert probe["flexWrap"] == "nowrap", context_msg
+            # The head only introduces the page; it must not eat the fold.
+            assert probe["head"]["height"] <= probe["viewportHeight"] * 0.42, context_msg
+            # The stack's own row gap is the only space allowed between the
+            # page intro and the next head row. An inflated flex basis shows up
+            # here as hundreds of blank pixels.
+            if probe["sub"] and probe["status"]:
+                blank = probe["status"]["top"] - probe["sub"]["bottom"]
+                assert blank <= probe["rowGap"] + 6, {"blank": blank, **context_msg}
+        else:
+            assert probe["flexDirection"] == "row", context_msg
+
+        if probe["lifecycle"] is not None:
+            rail = probe["lifecycle"]
+            assert rail["left"] >= -0.5, context_msg
+            assert rail["right"] <= probe["viewportWidth"] + 0.5, context_msg
+            assert rail["overflowX"] == "auto", context_msg
+            if rail["scrollWidth"] > rail["clientWidth"] + 1:
+                # The rail owns the intentional horizontal scroll: every step
+                # must stay reachable inside it without moving the page.
+                reach = page.evaluate(
+                    """
+                    () => {
+                      const rail = document.querySelector(".application-lifecycle");
+                      rail.scrollLeft = rail.scrollWidth;
+                      const railRect = rail.getBoundingClientRect();
+                      const steps = rail.querySelectorAll("li");
+                      const last = steps[steps.length - 1].getBoundingClientRect();
+                      return {
+                        scrollLeft: rail.scrollLeft,
+                        lastRight: last.right,
+                        railRight: railRect.right,
+                        railLeft: railRect.left,
+                        lastLeft: last.left,
+                        docScrollWidth: document.documentElement.scrollWidth,
+                        viewportWidth: window.innerWidth,
+                      };
+                    }
+                    """
+                )
+                assert reach["scrollLeft"] > 0, {"reach": reach, **context_msg}
+                assert reach["lastRight"] <= reach["railRight"] + 1, {"reach": reach, **context_msg}
+                assert reach["lastLeft"] >= reach["railLeft"] - 1, {"reach": reach, **context_msg}
+                assert reach["docScrollWidth"] <= reach["viewportWidth"] + 1, {"reach": reach, **context_msg}
+                page.evaluate("() => { document.querySelector('.application-lifecycle').scrollLeft = 0; }")
+
+            # Keyboard focus must never land on a step the user cannot see at
+            # all (WCAG 2.2 SC 2.4.11 Focus Not Obscured, Minimum), and it must
+            # never drag the page sideways.
+            links = page.locator(".application-lifecycle li > a")
+            for index in range(links.count()):
+                link = links.nth(index)
+                link.focus()
+                focus_state = page.evaluate(
+                    """
+                    () => {
+                      const el = document.activeElement;
+                      const rail = document.querySelector(".application-lifecycle");
+                      const r = el.getBoundingClientRect();
+                      const rr = rail.getBoundingClientRect();
+                      const cs = getComputedStyle(el);
+                      return {
+                        id: el.id,
+                        focusedIsStep: rail.contains(el),
+                        visibleWidth: Math.min(r.right, rr.right) - Math.max(r.left, rr.left),
+                        outlineStyle: cs.outlineStyle,
+                        docScrollWidth: document.documentElement.scrollWidth,
+                        viewportWidth: window.innerWidth,
+                        scrollLeft: Math.round(rail.scrollLeft),
+                      };
+                    }
+                    """
+                )
+                assert focus_state["focusedIsStep"], {"focus": focus_state, **context_msg}
+                assert focus_state["visibleWidth"] > 0, {"focus": focus_state, **context_msg}
+                assert focus_state["outlineStyle"] != "none", {"focus": focus_state, **context_msg}
+                assert focus_state["docScrollWidth"] <= focus_state["viewportWidth"] + 1, {
+                    "focus": focus_state,
+                    **context_msg,
+                }
+
+        assert_no_horizontal_overflow(page)
+        assert_no_blocked_writes(page)
+        assert_clean_console(console_errors, page_errors)
+    finally:
+        context.close()
+
+
+def wheel_until_inside_viewport(
+    page,
+    scroller: str,
+    selector: str,
+    *,
+    max_wheels: int = 14,
+    step: int = 380,
+) -> None:
+    """Reach `selector` using real wheel events only.
+
+    Playwright's `scroll_into_view_if_needed` will happily reveal an element a
+    trackpad user can never reach, so physical reachability needs physical
+    scrolling. Hovering the scroller's left gutter keeps the wheel off nested
+    scrollers such as the job-description textarea.
+    """
+    state_probe = """
+      (selector) => {
+        const el = document.querySelector(selector);
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return {
+          inside: r.top >= -0.5 && r.bottom <= window.innerHeight + 0.5
+                  && r.left >= -0.5 && r.right <= window.innerWidth + 0.5,
+          top: r.top,
+          bottom: r.bottom,
+          viewportHeight: window.innerHeight,
+        };
+      }
+    """
+    page.locator(scroller).hover(position={"x": 6, "y": 60})
+    last = None
+    for _ in range(max_wheels + 1):
+        last = page.evaluate(state_probe, selector)
+        assert last is not None, f"{selector} is not in the DOM"
+        if last["inside"]:
+            return
+        page.mouse.wheel(0, step)
+        page.wait_for_timeout(90)
+    pytest.fail(f"{selector} never became reachable by physical scrolling: {last}")
+
+
+@pytest.mark.parametrize(
+    "viewport",
+    [Viewport(430, 932), Viewport(390, 844), Viewport(320, 740)],
+    ids=lambda v: v.label,
+)
+def test_cover_letter_generator_and_library_reachable_by_physical_scroll(
+    browser, viewport: Viewport
+):
+    """Every generator and saved-letter control must be trackpad-reachable.
+
+    An inflated page head still passes sticky-action checks, so this walks the
+    real scroll container with wheel events and refuses to fall back to
+    Playwright's automatic locator scrolling.
+    """
+    context, page, console_errors, page_errors = new_page(browser)
+    try:
+        goto_route(page, "/cover-letters", viewport)
+        page.wait_for_selector("#cl-generate")
+        scroll_state = page.locator(".cl-main").evaluate(
+            """
+            el => ({
+              overflowY: getComputedStyle(el).overflowY,
+              scrollHeight: el.scrollHeight,
+              clientHeight: el.clientHeight,
+            })
+            """
+        )
+        assert scroll_state["overflowY"] == "auto", scroll_state
+        assert scroll_state["scrollHeight"] > scroll_state["clientHeight"], scroll_state
+
+        for selector in ["#cl-cv", "#cl-jd", "#cl-generate", ".cl-library-panel", "#cl-list"]:
+            wheel_until_inside_viewport(page, ".cl-main", selector)
+
+        moved = page.locator(".cl-main").evaluate("el => el.scrollTop")
+        assert moved > 0, "physical wheel scrolling never moved the pane"
+        assert_no_horizontal_overflow(page)
+        assert page.locator(".cl-main").evaluate("el => el.scrollLeft") == 0
+        assert_no_blocked_writes(page)
+        assert_clean_console(console_errors, page_errors)
+    finally:
+        context.close()

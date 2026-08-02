@@ -493,10 +493,13 @@ class TestPhotoUploadRoute:
         prior = _png_bytes(24, 24, color=(4, 5, 6))
         old_path = owner_dir / "photo.png"
         old_path.write_bytes(prior)
+        import pdf_store
+
+        monkeypatch.setattr(server_module, "_artifact_cleanup_applies", lambda: True)
         monkeypatch.setattr(
-            server_module,
-            "_list_cv_rows",
-            lambda: (_ for _ in ()).throw(RuntimeError("documents unreachable")),
+            pdf_store,
+            "delete_owner_cv_artifacts",
+            lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("documents unreachable")),
         )
 
         upload = client.post(
@@ -512,7 +515,9 @@ class TestPhotoUploadRoute:
         assert old_path.read_bytes() == prior
         assert not (owner_dir / "photo.jpg").exists()
 
-    def test_owner_photo_is_only_served_through_authenticated_api(self, client, bypass_auth, disk_env):
+    def test_owner_photo_is_only_served_through_authenticated_api(
+        self, client, bypass_auth, fake_supabase, disk_env
+    ):
         owner_dir = disk_env / "design" / "photos" / bypass_auth
         owner_dir.mkdir(parents=True)
         owner_dir.joinpath("photo.png").write_bytes(_png_bytes(24, 24))
@@ -644,12 +649,14 @@ class TestPhotoUploadRoute:
         owner_b = "bbbbbbbb-0000-0000-0000-000000000002"
 
         monkeypatch.setattr(auth_mod, "require_auth", _make_stub(owner_a))
+        fake_supabase.owner_id = owner_a
         ra = client.post(
             "/api/asset/photo",
             data={"file": (io.BytesIO(_png_bytes(30, 30)), "a.png")},
             content_type="multipart/form-data",
         )
         monkeypatch.setattr(auth_mod, "require_auth", _make_stub(owner_b))
+        fake_supabase.owner_id = owner_b
         rb = client.post(
             "/api/asset/photo",
             data={"file": (io.BytesIO(_jpeg_bytes(30, 30)), "b.jpg")},

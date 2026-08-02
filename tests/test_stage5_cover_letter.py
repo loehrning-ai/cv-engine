@@ -629,4 +629,7 @@ class TestCoverLetterRLS:
             assert still, "RLS leak: B deleted A's cover letter"
         finally:
             # Cleanup: A removes its own row.
-            sb_a.table("documents").delete().eq("id", a_doc_id).execute()
+            sb_a.rpc(
+                "delete_document_safely",
+                {"p_document_id": a_doc_id, "p_document_type": "cover_letter"},
+            ).execute()

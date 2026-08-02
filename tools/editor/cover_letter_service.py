@@ -35,6 +35,7 @@ absent, so old blobs (written before these fields existed) still render.
 """
 from __future__ import annotations
 
+import unicodedata
 from typing import Any
 
 import yaml
@@ -65,6 +66,12 @@ except ImportError:  # pragma: no cover - unusual import roots
 
 GENERATE_KIND = "cover_letter_generate"
 DEFAULT_NAME = "Cover letter"
+COVER_ENVELOPE_MAX_BYTES = 64 * 1024
+COVER_BODY_MAX_CHARS = 32_000
+COVER_ATTACHMENT_MAX_COUNT = 20
+COVER_ATTACHMENT_MAX_CHARS = 200
+DOCUMENT_LOOKUP_BATCH_SIZE = 100
+DOCUMENT_LIST_PAGE_SIZE = 500
 
 
 def _doc_sb():
@@ -86,6 +93,14 @@ class CoverLetterError(Exception):
         self.payload = payload
 
 
+class DocumentInsertError(Exception):
+    """An atomic document insert was rejected by current account/link state."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
 # ---------------------------------------------------------------------------
 # yaml_blob (de)serialization — small structured payload.
 # ---------------------------------------------------------------------------
@@ -98,6 +113,7 @@ _BLOB_FIELDS = (
     "body",
     "language",
     "source_cv_id",
+    "sender_name",
     "job_id",
     # Business-letter envelope (NEW — all optional; renderer falls back to
     # EN/DE defaults when absent). ``recipient`` above is the addressee line;
@@ -108,11 +124,179 @@ _BLOB_FIELDS = (
     "attachments",  # list[str] — enclosure labels ("CV") → "Enclosures"/"Anlagen"
 )
 
+_ENVELOPE_TEXT_LIMITS = {
+    "recipient": 500,
+    "company": 500,
+    "role": 500,
+    "tone": 200,
+    "body": COVER_BODY_MAX_CHARS,
+    "language": 16,
+    "source_cv_id": 128,
+    "sender_name": 500,
+    "job_id": 128,
+    "subject": 500,
+    "salutation": 500,
+    "closing": 500,
+}
+
+
+def _envelope_error(
+    *, field: str, message: str, code: str, status: int = 400, **details: Any
+) -> CoverLetterError:
+    return CoverLetterError(
+        status,
+        {"error": message, "code": code, "field": field, **details},
+    )
+
+
+def _contains_forbidden_control(text: str, *, multiline: bool) -> bool:
+    """Reject controls/invisible format characters instead of deleting them."""
+    for char in text:
+        if char in "\t\r\n":
+            if multiline:
+                continue
+            return True
+        if unicodedata.category(char) in {"Cc", "Cf", "Cs"}:
+            return True
+    return False
+
+
+def _normalize_text(
+    field: str,
+    value: object,
+    *,
+    max_chars: int,
+    multiline: bool = False,
+) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise _envelope_error(
+            field=field,
+            message=f"'{field}' must be a string",
+            code="invalid_cover_envelope_type",
+        )
+    if _contains_forbidden_control(value, multiline=multiline):
+        raise _envelope_error(
+            field=field,
+            message=f"'{field}' contains control characters",
+            code="invalid_cover_envelope_control",
+        )
+    normalized = value if multiline else value.strip()
+    if len(normalized) > max_chars:
+        raise _envelope_error(
+            field=field,
+            message=f"'{field}' is too long",
+            code="cover_envelope_field_too_large",
+            status=413,
+            max_chars=max_chars,
+        )
+    return normalized
+
+
+def _normalize_attachments(value: object) -> list[str] | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        if _contains_forbidden_control(value, multiline=True):
+            raise _envelope_error(
+                field="attachments",
+                message="'attachments' contains control characters",
+                code="invalid_cover_envelope_control",
+            )
+        items: list[object] = value.splitlines()
+    elif isinstance(value, list):
+        items = value
+    else:
+        raise _envelope_error(
+            field="attachments",
+            message="'attachments' must be a list of strings or newline-delimited string",
+            code="invalid_cover_envelope_type",
+        )
+
+    if len(items) > COVER_ATTACHMENT_MAX_COUNT:
+        raise _envelope_error(
+            field="attachments",
+            message="too many attachments",
+            code="cover_envelope_attachment_count",
+            status=413,
+            max_items=COVER_ATTACHMENT_MAX_COUNT,
+        )
+
+    normalized: list[str] = []
+    for index, item in enumerate(items):
+        if item is None:
+            continue
+        if not isinstance(item, str):
+            raise _envelope_error(
+                field="attachments",
+                message="each attachment must be a string",
+                code="invalid_cover_envelope_type",
+                index=index,
+            )
+        label = _normalize_text(
+            "attachments",
+            item,
+            max_chars=COVER_ATTACHMENT_MAX_CHARS,
+        )
+        if label:
+            normalized.append(label)
+    return normalized
+
+
+def normalize_envelope(data: dict[str, Any]) -> dict[str, Any]:
+    """Return a type-stable, bounded envelope suitable for persistence."""
+    if not isinstance(data, dict):
+        raise CoverLetterError(
+            400,
+            {
+                "error": "cover-letter envelope must be an object",
+                "code": "invalid_cover_envelope_type",
+            },
+        )
+    payload: dict[str, Any] = {}
+    for field in _BLOB_FIELDS:
+        if field == "attachments":
+            payload[field] = _normalize_attachments(data.get(field))
+            continue
+        payload[field] = _normalize_text(
+            field,
+            data.get(field),
+            max_chars=_ENVELOPE_TEXT_LIMITS[field],
+            multiline=field == "body",
+        )
+    if payload.get("language"):
+        payload["language"] = payload["language"].lower()
+    return payload
+
+
+def normalize_generation_inputs(
+    *, tone: object, recipient: object, company_context: object
+) -> tuple[str, str, str]:
+    """Validate prompt-bound generation fields before an AI call is made."""
+    normalized_tone = _normalize_text("tone", tone, max_chars=200) or "auto"
+    normalized_recipient = _normalize_text("recipient", recipient, max_chars=500) or ""
+    normalized_context = _normalize_text(
+        "company_context", company_context, max_chars=2000, multiline=True
+    ) or ""
+    return normalized_tone, normalized_recipient, normalized_context
+
 
 def serialize_blob(data: dict[str, Any]) -> str:
     """Serialize a cover-letter payload to the YAML text stored in the row."""
-    payload = {k: data.get(k) for k in _BLOB_FIELDS}
-    return yaml.safe_dump(payload, sort_keys=False, allow_unicode=True, width=120)
+    payload = normalize_envelope(data)
+    serialized = yaml.safe_dump(payload, sort_keys=False, allow_unicode=True, width=120)
+    size = len(serialized.encode("utf-8"))
+    if size > COVER_ENVELOPE_MAX_BYTES:
+        raise CoverLetterError(
+            413,
+            {
+                "error": "cover-letter envelope is too large",
+                "code": "cover_envelope_too_large",
+                "max_bytes": COVER_ENVELOPE_MAX_BYTES,
+            },
+        )
+    return serialized
 
 
 def parse_blob(yaml_text: str | None) -> dict[str, Any]:
@@ -150,15 +334,77 @@ def list_documents(doc_type: str) -> list[dict]:
     query in server.py but parameterized by ``type`` so cover letters reuse it.
     """
     sb = _doc_sb()
-    resp = (
-        sb.table("documents")
-        .select("id, name, slug, yaml_blob, job_id, created_at, updated_at, last_used_at")
-        .eq("type", doc_type)
-        .is_("deleted_at", "null")
-        .order("last_used_at", desc=True)
-        .execute()
-    )
-    return resp.data or []
+    rows: list[dict] = []
+    offset = 0
+    while True:
+        page = (
+            sb.table("documents")
+            .select(
+                "id, name, slug, summary_company, summary_role, job_id, "
+                "created_at, updated_at, last_used_at"
+            )
+            .eq("type", doc_type)
+            .is_("deleted_at", "null")
+            .order("last_used_at", desc=True)
+            .order("updated_at", desc=True)
+            .order("id")
+            .range(offset, offset + DOCUMENT_LIST_PAGE_SIZE - 1)
+            .execute()
+            .data
+            or []
+        )
+        rows.extend(page)
+        if len(page) < DOCUMENT_LIST_PAGE_SIZE:
+            break
+        offset += DOCUMENT_LIST_PAGE_SIZE
+    if doc_type == "cover_letter":
+        # Pre-summary-column letters retain their original company/role. Fetch
+        # full blobs only for those legacy IDs; every newly created/saved row
+        # remains on the bounded summary-only path above.
+        legacy_ids = [
+            str(row.get("id"))
+            for row in rows
+            if row.get("id")
+            and (
+                row.get("summary_company") is None
+                or row.get("summary_role") is None
+            )
+        ]
+        legacy_summaries: dict[str, tuple[str, str]] = {}
+        for start in range(0, len(legacy_ids), DOCUMENT_LOOKUP_BATCH_SIZE):
+            batch = legacy_ids[start : start + DOCUMENT_LOOKUP_BATCH_SIZE]
+            legacy_rows = (
+                sb.table("documents")
+                .select("id, yaml_blob")
+                .eq("type", "cover_letter")
+                .is_("deleted_at", "null")
+                .in_("id", batch)
+                .execute()
+                .data
+                or []
+            )
+            for legacy in legacy_rows:
+                blob = parse_blob(legacy.get("yaml_blob"))
+                legacy_summaries[str(legacy.get("id"))] = (
+                    (
+                        str(blob.get("company") or "")[:500]
+                        if isinstance(blob.get("company"), str)
+                        else ""
+                    ),
+                    (
+                        str(blob.get("role") or "")[:500]
+                        if isinstance(blob.get("role"), str)
+                        else ""
+                    ),
+                )
+        for row in rows:
+            summary = legacy_summaries.get(str(row.get("id")))
+            if summary is not None:
+                if row.get("summary_company") is None:
+                    row["summary_company"] = summary[0]
+                if row.get("summary_role") is None:
+                    row["summary_role"] = summary[1]
+    return rows
 
 
 def job_titles_for(job_ids: list[str]) -> dict[str, str]:
@@ -176,19 +422,21 @@ def job_titles_for(job_ids: list[str]) -> dict[str, str]:
     ids = sorted({j for j in job_ids if j})
     if not ids:
         return {}
-    sb = _doc_sb()
-    resp = (
-        sb.table("saved_jobs")
-        .select("id, title")
-        .in_("id", ids)
-        .execute()
-    )
     out: dict[str, str] = {}
-    for r in resp.data or []:
-        jid = r.get("id")
-        title = (r.get("title") or "").strip()
-        if jid and title:
-            out[jid] = title
+    sb = _doc_sb()
+    for start in range(0, len(ids), DOCUMENT_LOOKUP_BATCH_SIZE):
+        batch = ids[start : start + DOCUMENT_LOOKUP_BATCH_SIZE]
+        resp = (
+            sb.table("saved_jobs")
+            .select("id, title")
+            .in_("id", batch)
+            .execute()
+        )
+        for r in resp.data or []:
+            jid = r.get("id")
+            title = (r.get("title") or "").strip()
+            if jid and title:
+                out[jid] = title
     return out
 
 
@@ -247,7 +495,16 @@ def mark_document_used(doc_id: str, doc_type: str, *, now_iso: str) -> bool:
 
 
 def insert_document(
-    doc_type: str, name: str, yaml_blob: str, *, job_id: str | None = None
+    doc_type: str,
+    name: str,
+    yaml_blob: str,
+    *,
+    job_id: str | None = None,
+    summary_company: str | None = None,
+    summary_role: str | None = None,
+    accent: str | None = None,
+    font: str | None = None,
+    density: str | None = None,
 ) -> dict:
     """Insert a document of ``doc_type`` for the caller; return the new row.
 
@@ -257,28 +514,70 @@ def insert_document(
     is stamped on the ``documents.job_id`` column so a job's detail view can
     group its documents by FK (not just by the value buried in the blob).
     """
-    payload: dict[str, Any] = {"type": doc_type, "name": name, "yaml_blob": yaml_blob}
-    if job_id is not None:
-        payload["job_id"] = job_id
     sb = _doc_sb()
-    resp = sb.table("documents").insert(payload).execute()
-    rows = resp.data or []
-    if not rows:
+    if local_demo_store.active():
+        payload: dict[str, Any] = {
+            "type": doc_type,
+            "name": name,
+            "yaml_blob": yaml_blob,
+        }
+        if job_id is not None:
+            payload["job_id"] = job_id
+        if doc_type == "cover_letter":
+            payload["summary_company"] = (summary_company or "")[:500]
+            payload["summary_role"] = (summary_role or "")[:500]
+        else:
+            payload.update({"accent": accent, "font": font, "density": density})
+        rows = sb.table("documents").insert(payload).execute().data or []
+        if not rows:
+            raise RuntimeError(f"failed to insert {doc_type} document")
+        return rows[0]
+
+    response = sb.rpc(
+        "insert_document_if_account_active",
+        {
+            "p_type": doc_type,
+            "p_name": name,
+            "p_yaml_blob": yaml_blob,
+            "p_job_id": job_id,
+            "p_accent": accent,
+            "p_font": font,
+            "p_density": density,
+            "p_summary_company": summary_company,
+            "p_summary_role": summary_role,
+        },
+    ).execute().data
+    result = response[0] if isinstance(response, list) and response else response
+    if not isinstance(result, dict):
         raise RuntimeError(f"failed to insert {doc_type} document")
-    return rows[0]
+    if result.get("status") != "created":
+        raise DocumentInsertError(str(result.get("code") or "document_insert_blocked"))
+    document = result.get("document")
+    if not isinstance(document, dict) or not document.get("id"):
+        raise RuntimeError(f"failed to insert {doc_type} document")
+    return document
 
 
-def update_document_blob(doc_id: str, doc_type: str, yaml_blob: str, *, now_iso: str) -> bool:
-    """Update a document's ``yaml_blob`` + ``updated_at``. True iff a row moved."""
+def update_document_blob(
+    doc_id: str,
+    doc_type: str,
+    yaml_blob: str,
+    *,
+    now_iso: str,
+    expected_revision: object | None = None,
+) -> dict | None:
+    """CAS-update a document blob and return the moved row, or ``None``."""
     sb = _doc_sb()
-    resp = (
+    query = (
         sb.table("documents")
         .update({"yaml_blob": yaml_blob, "updated_at": now_iso})
         .eq("id", doc_id)
         .eq("type", doc_type)
-        .execute()
     )
-    return bool(resp.data or [])
+    if expected_revision is not None:
+        query = query.eq("updated_at", expected_revision)
+    rows = query.execute().data or []
+    return rows[0] if rows else None
 
 
 def rename_document(doc_id: str, doc_type: str, name: str, *, now_iso: str) -> bool:
@@ -294,17 +593,105 @@ def rename_document(doc_id: str, doc_type: str, name: str, *, now_iso: str) -> b
     return bool(resp.data or [])
 
 
-def delete_document(doc_id: str, doc_type: str) -> bool:
-    """Hard-delete a document. True iff a row was removed (False → 404)."""
-    sb = _doc_sb()
-    resp = (
-        sb.table("documents")
-        .delete()
-        .eq("id", doc_id)
-        .eq("type", doc_type)
-        .execute()
-    )
-    return bool(resp.data or [])
+def delete_document(
+    doc_id: str,
+    doc_type: str,
+    *,
+    include_artifacts: bool = False,
+) -> bool | dict[str, Any]:
+    """Atomically hard-delete an unused document owned by the caller.
+
+    Hosted tenants use the database RPC that locks the document before it
+    checks packet/review lineage.  This closes the former SELECT/DELETE race
+    and keeps authenticated callers from bypassing the history guard with a
+    direct Data API DELETE.  The process-local demo store retains its direct
+    in-memory mutation path while enforcing the same visible contract.
+
+    Returns ``False`` when the document is absent/not owned.  Protected
+    application history raises :class:`CoverLetterError` with HTTP 409.
+    """
+    if doc_type not in {"cv", "cover_letter"}:
+        raise ValueError("unsupported document type")
+
+    if local_demo_store.active():
+        db = local_demo_store.db()
+        has_packet = any(
+            row.get("owner_id", db.owner_id) == db.owner_id
+            and doc_id
+            in {
+                row.get("source_cv_id"),
+                row.get("tailored_cv_id"),
+                row.get("cover_letter_id"),
+            }
+            for row in db.tables.setdefault("application_packets", [])
+        )
+        has_review = any(
+            row.get("owner_id", db.owner_id) == db.owner_id
+            and row.get("cv_id") == doc_id
+            for row in db.tables.setdefault("tailor_review_states", [])
+        )
+        if has_packet or has_review:
+            raise CoverLetterError(
+                409,
+                {
+                    "error": "This document has application history and cannot be deleted.",
+                    "code": "document_has_application_history",
+                },
+            )
+        resp = (
+            db.table("documents")
+            .delete()
+            .eq("id", doc_id)
+            .eq("type", doc_type)
+            .execute()
+        )
+        deleted = bool(resp.data or [])
+        if include_artifacts and deleted:
+            return {"deleted": doc_id, "artifacts": []}
+        return deleted
+
+    response = auth_mod.user_supabase().rpc(
+        "delete_document_safely",
+        {"p_document_id": doc_id, "p_document_type": doc_type},
+    ).execute()
+    data = response.data
+    if isinstance(data, list):
+        result = data[0] if data and isinstance(data[0], dict) else {}
+    else:
+        result = data if isinstance(data, dict) else {}
+
+    status = result.get("status")
+    if status == "deleted" and str(result.get("deleted") or "") == doc_id:
+        if include_artifacts:
+            artifacts = result.get("artifacts")
+            if not isinstance(artifacts, list) or any(not isinstance(row, dict) for row in artifacts):
+                raise RuntimeError("safe document delete returned invalid artifact evidence")
+            return {"deleted": doc_id, "artifacts": artifacts}
+        return True
+    if status == "not_found":
+        return False
+    if result.get("code") == "document_has_application_history":
+        raise CoverLetterError(
+            409,
+            {
+                "error": "This document has application history and cannot be deleted.",
+                "code": "document_has_application_history",
+            },
+        )
+    if result.get("code") == "document_artifact_invalid":
+        raise CoverLetterError(
+            503,
+            {
+                "error": "PDF artifact storage is temporarily unavailable.",
+                "code": "artifact_cleanup_unavailable",
+            },
+        )
+    if result.get("code") == "account_unavailable":
+        raise CoverLetterError(
+            409,
+            {"error": "Account is unavailable.", "code": "account_unavailable"},
+        )
+    raise RuntimeError("safe document delete returned an invalid response")
 
 
 # ---------------------------------------------------------------------------
@@ -378,8 +765,23 @@ def generate_cover_letter(
     :class:`llm_gateway.LLMUnavailable` propagate so the route's existing
     handler maps the 402/503 credit/key responses.
     """
+    tone, recipient, company_context = normalize_generation_inputs(
+        tone=tone,
+        recipient=recipient,
+        company_context=company_context,
+    )
+
     # 1) CV (RLS) — the only source of candidate facts.
     cv_model, _cv_row = load_cv_for_grounding(cv_id)
+    sender_name = str(cv_model.get("name") or "").strip()
+    if not sender_name:
+        raise CoverLetterError(
+            422,
+            {
+                "error": "The source CV has no candidate name.",
+                "code": "source_cv_name_missing",
+            },
+        )
 
     # 2) (SECURITY MUST-FIX) If this letter will be stamped with a job_id, verify
     #    the caller OWNS that job BEFORE any AI call or document write.
@@ -398,6 +800,23 @@ def generate_cover_letter(
         raise CoverLetterError(
             400, {"error": str(exc), "code": "empty_jd"}
         ) from exc
+
+    # Bound parser-derived envelope metadata before it reaches either the
+    # prompt or persisted YAML. The parser already returns strings, but this is
+    # the authoritative per-field boundary for direct service callers too.
+    metadata = normalize_envelope(
+        {
+            "company": jd_json.get("company"),
+            "role": jd_json.get("title"),
+            "language": jd_json.get("language"),
+        }
+    )
+    jd_json = {
+        **jd_json,
+        "company": metadata.get("company"),
+        "title": metadata.get("role"),
+        "language": metadata.get("language"),
+    }
 
     # 3) Build the grounded prompt (CV JSON + parsed JD JSON + tone).
     system, user = build_cover_letter_messages(
@@ -483,6 +902,10 @@ def generate_cover_letter(
             "body": result.text,
             "language": language,
             "source_cv_id": cv_id,
+            # Immutable render snapshot. A standalone letter remains complete
+            # if its source CV is later deleted, and export never silently
+            # drops the signature during a transient source lookup failure.
+            "sender_name": sender_name,
             "job_id": job_id,
             "subject": _default_subject(role_title, language),
             "salutation": None,  # renderer derives from recipient + language
@@ -493,7 +916,14 @@ def generate_cover_letter(
     name = _doc_name(jd_json)
     # Stamp the job link on the documents.job_id column too (not only inside the
     # blob) so a job's detail view groups its letters by FK.
-    row = insert_document("cover_letter", name, blob, job_id=job_id)
+    row = insert_document(
+        "cover_letter",
+        name,
+        blob,
+        job_id=job_id,
+        summary_company=jd_json.get("company") or "",
+        summary_role=role_title or "",
+    )
 
     # 8) Audit the BYO path (managed path already logged inside the RPC).
     if not used_managed:
@@ -502,6 +932,7 @@ def generate_cover_letter(
     return {
         "id": row["id"],
         "name": row.get("name") or name,
+        "updated_at": row.get("updated_at"),
         "body": result.text,
         "word_count": result.word_count,
         "cliches_removed": [

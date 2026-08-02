@@ -198,6 +198,18 @@ class TestAnalyticsNoop:
         monkeypatch.setenv("POSTHOG_KEY", "phc_test")
         assert analytics.is_enabled() is True
 
+    def test_demo_mode_disables_ambient_analytics_key(self, monkeypatch):
+        import analytics
+
+        monkeypatch.setenv("POSTHOG_KEY", "phc_test")
+        monkeypatch.setenv("ONEPAGER_DEMO_MODE", "true")
+        called = []
+        monkeypatch.setattr(analytics, "_post", lambda payload: called.append(payload))
+
+        assert analytics.is_enabled() is False
+        analytics.capture(analytics.EVENT_FIRST_EXPORT, "demo-owner")
+        assert called == []
+
     def test_capture_dispatches_when_enabled(self, monkeypatch):
         """With a key set, capture dispatches to _post on a thread (no real net)."""
         import threading

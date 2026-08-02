@@ -17,9 +17,13 @@ outcome that matters:
 
 Fixtures are fully torn down and re-set-up for the retry (function scope;
 module-scoped fixtures such as the shared browser are reused). Opt out per
-test with ``@pytest.mark.no_retry``.
+test with ``@pytest.mark.no_retry``. Set ``ONEPAGER_E2E_RETRY=0`` to disable
+the guard suite-wide for strict certification runs; pytest then uses its
+normal single-attempt protocol and reports the first failure directly.
 """
 from __future__ import annotations
+
+import os
 
 from _pytest.runner import runtestprotocol
 
@@ -32,6 +36,8 @@ def _failed(reports) -> bool:
 
 
 def pytest_runtest_protocol(item, nextitem):
+    if os.environ.get("ONEPAGER_E2E_RETRY") == "0":
+        return None  # strict gate: delegate to pytest's single-attempt protocol
     if item.get_closest_marker("no_retry") is not None:
         return None  # default single-attempt handling
     if not hasattr(item, "_e2e_reruns_done"):
