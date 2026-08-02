@@ -24,7 +24,7 @@ google-genai>=1.0,<3.0
 
 # Serving + config
 gunicorn>=21.0,<24.0       # WSGI server for the containerized editor
-python-dotenv>=1.0,<2.0    # load .env (ANTHROPIC_API_KEY, future Supabase/R2/KEK)
+python-dotenv>=1.2.2,<2.0    # load .env (ANTHROPIC_API_KEY, future Supabase/R2/KEK)
 
 # Cloud: Supabase auth + per-user storage (Stage 2)
 supabase>=2.0,<3.0         # supabase-py client; PostgREST runs under the user JWT (RLS)
