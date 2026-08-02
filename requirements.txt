@@ -27,7 +27,7 @@ gunicorn>=21.0,<24.0       # WSGI server for the containerized editor
 python-dotenv>=1.0,<2.0    # load .env (ANTHROPIC_API_KEY, future Supabase/R2/KEK)
 
 # Cloud: Supabase auth + per-user storage (Stage 2)
-supabase>=2.0,<3.0         # supabase-py client; PostgREST runs under the user JWT (RLS)
+supabase>=2.31.0,<3.0         # supabase-py client; PostgREST runs under the user JWT (RLS)
 pyjwt[crypto]>=2.8,<3.0    # verify Supabase JWT via JWKS (ES256/RS256); pulls in cryptography
 cryptography>=48.0.1,<49.0 # AES-256-GCM envelope encryption for BYO LLM keys (Stage 4)
 pyasn1>=0.6.4,<0.7.0       # security floor for the ASN.1 dependency used by auth stacks
