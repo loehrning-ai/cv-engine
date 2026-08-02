@@ -23,7 +23,7 @@ anthropic>=0.117.0,<1.0
 google-genai>=1.0,<3.0
 
 # Serving + config
-gunicorn>=21.0,<24.0       # WSGI server for the containerized editor
+gunicorn>=26.0.0,<27.0       # WSGI server for the containerized editor
 python-dotenv>=1.0,<2.0    # load .env (ANTHROPIC_API_KEY, future Supabase/R2/KEK)
 
 # Cloud: Supabase auth + per-user storage (Stage 2)
