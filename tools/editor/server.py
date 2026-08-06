@@ -2002,12 +2002,49 @@ def _delete_detached_document_pdf_artifacts(rows: list[dict[str, Any]]) -> int:
         raise _ArtifactCleanupUnavailable(document_deleted=True) from exc
 
 
+# Library reads are a hot path, and draining the outbox costs one R2 round-trip
+# per row. The dedicated pdf-cleanup-worker owns the durable queue; this in-
+# request drain is only the fallback for deployments that do not run it, so it
+# is throttled per process rather than firing on every list request.
+_PENDING_CLEANUP_MIN_INTERVAL_S = 60.0
+_PENDING_CLEANUP_BATCH = 3
+_last_pending_cleanup_at = 0.0
+
+
+def _reset_pending_cleanup_throttle() -> None:
+    """Allow the next library read to drain the outbox immediately.
+
+    The throttle is process-global by design, which makes it order-dependent
+    under a test session sharing one imported module. Tests reset it so the
+    drain contract is exercised deterministically rather than depending on
+    which test happened to consume the window first.
+    """
+    global _last_pending_cleanup_at
+    _last_pending_cleanup_at = 0.0
+
+
 def _retry_pending_pdf_artifacts_best_effort() -> int:
-    """Opportunistically consume a small durable cleanup batch on library reads."""
+    """Opportunistically consume a small durable cleanup batch on library reads.
+
+    Bounded twice over: at most ``_PENDING_CLEANUP_BATCH`` objects, and at most
+    once every ``_PENDING_CLEANUP_MIN_INTERVAL_S`` seconds per process. Before
+    the throttle, every ``GET /api/cvs`` and ``GET /api/cover-letters`` could
+    block on up to ten sequential object deletes, so a slow or failing R2 put
+    that latency straight onto the user's library view.
+    """
+    global _last_pending_cleanup_at
     if not _artifact_cleanup_applies():
         return 0
+    now = time.monotonic()
+    if now - _last_pending_cleanup_at < _PENDING_CLEANUP_MIN_INTERVAL_S:
+        return 0
+    # Stamp before the attempt: a failing backend must not be retried on every
+    # subsequent read just because it never reached the success path.
+    _last_pending_cleanup_at = now
     try:
-        return pdf_store.retry_pending_artifact_cleanup(limit=10)
+        return pdf_store.retry_pending_artifact_cleanup(
+            limit=_PENDING_CLEANUP_BATCH
+        )
     except Exception as exc:  # noqa: BLE001 - queue remains durable for retry
         app.logger.warning(
             "Pending PDF object cleanup deferred: %s",

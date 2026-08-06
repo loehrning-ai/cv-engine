@@ -23,13 +23,13 @@ blinker==1.9.0 \
     --hash=sha256:b4ce2265a7abece45e7cc896e98dbebe6cead56bcf805a3d23136d145f5445bf \
     --hash=sha256:ba0efaa9080b619ff2f3459d1d500c57bddea4a6b424b60a91141db6fd2f08bc
     # via flask
-boto3==1.43.40 \
-    --hash=sha256:5fa80de4b4b7bab383dd8c563e235d51fcc7df4502662af56f0a2472c3c15651 \
-    --hash=sha256:a7108b9ce25b8f92d1ce96b9e35090794d5c58b219ff2f6a7a65c8986a4ed6f4
+boto3==1.43.65 \
+    --hash=sha256:a8217fb68cae3f8a7575eef395383b68b846d92d29b0e8f6e948e6e9e08dcc3f \
+    --hash=sha256:f2331154aee1ae97ece48077d77f41d3bd5ea39eb4e3037030448b58695a3a79
     # via -r requirements.txt
-botocore==1.43.40 \
-    --hash=sha256:0bc9d352267c9e48415c5d7bb61ff05c3f193eac2fc7e69cfd229a05fbab67d6 \
-    --hash=sha256:2085a4314cfd2c8bc1d08ab8039f76c92e99278db0d2a0e2437010526d5d5d70
+botocore==1.43.65 \
+    --hash=sha256:41a13d9a1954d786f90cdbba0be0953fe9b9389f240b5ff71340c4706ea40135 \
+    --hash=sha256:eea5440cf4b850d0f4de4f7eda418c325c87de6d8980873f8b636bb482b31d0f
     # via
     #   boto3
     #   s3transfer
@@ -517,9 +517,9 @@ google-genai==2.10.0 \
     --hash=sha256:77912cd558cd7dfd5b75c25fd1c609e78d7954dde583331104022a46ea90f9ee \
     --hash=sha256:d5350311567ae660c24cbc1752aee4b3d660f89c0106d2dcd2a69978c35afe1e
     # via -r requirements.txt
-gunicorn==23.0.0 \
-    --hash=sha256:ec400d38950de4dfd418cff8328b2c8faed0edb0d517d3394e457c317908ca4d \
-    --hash=sha256:f014447a0101dc57e294f6c18ca6b40227a4c90e9bdb586042628030cba004ec
+gunicorn==26.0.0 \
+    --hash=sha256:40233d26a5f0d1872916188c276e21641155111c2853f0c2cd55260aec0d24fc \
+    --hash=sha256:ca9346f85e3a4aeeb64d491045c16b9a35647abd37ea15efe53080eb8b090baf
     # via -r requirements.txt
 h11==0.16.0 \
     --hash=sha256:4e35b956cf45792e4caa5885e69fba00bdbc6ffafbfa020300e549b208ee5ff1 \

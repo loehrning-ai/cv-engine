@@ -217,6 +217,78 @@ begin
   end if;
 
   ---------------------------------------------------------------------------
+  -- A failing cleanup row must back off, not spin. Before the backoff landed,
+  -- record_pdf_artifact_cleanup_failure bumped attempt_count but left
+  -- not_before alone, so the worker re-claimed the same doomed row every cycle.
+  ---------------------------------------------------------------------------
+  declare
+    cleanup_id uuid;
+    token constant uuid := '00000000-0000-4000-8000-0000000000ff';
+    delay_first interval;
+    delay_later interval;
+  begin
+    insert into public.pdf_artifact_cleanup_queue (
+      owner_id, document_id, r2_key, content_hash, claim_token, claimed_at)
+    values (
+      owner,
+      '00000000-0000-4000-8000-0000000000aa',
+      'probe/owner/doc.pdf',
+      repeat('a', 64),
+      token,
+      now())
+    returning id into cleanup_id;
+
+    checks := checks + 1;
+    if not public.record_pdf_artifact_cleanup_failure(owner, cleanup_id, token) then
+      failures := array_append(failures, 'failure accounting did not update the queue row');
+    end if;
+
+    select q.not_before - now() into delay_first
+      from public.pdf_artifact_cleanup_queue q where q.id = cleanup_id;
+
+    checks := checks + 1;
+    if delay_first is null or delay_first <= interval '0' then
+      failures := array_append(failures,
+        format('first failure did not defer the row: %s', delay_first));
+    end if;
+
+    -- Simulate a row that has already failed repeatedly; the delay must grow.
+    update public.pdf_artifact_cleanup_queue
+       set attempt_count = 4, claim_token = token, claimed_at = now()
+     where id = cleanup_id;
+    perform public.record_pdf_artifact_cleanup_failure(owner, cleanup_id, token);
+    select q.not_before - now() into delay_later
+      from public.pdf_artifact_cleanup_queue q where q.id = cleanup_id;
+
+    checks := checks + 1;
+    if delay_later is null or delay_later <= delay_first then
+      failures := array_append(failures,
+        format('backoff did not grow with attempts: first=%s later=%s',
+               delay_first, delay_later));
+    end if;
+
+    -- Capped, so a long-failing row still retries hourly rather than never.
+    update public.pdf_artifact_cleanup_queue
+       set attempt_count = 40, claim_token = token, claimed_at = now()
+     where id = cleanup_id;
+    perform public.record_pdf_artifact_cleanup_failure(owner, cleanup_id, token);
+
+    checks := checks + 1;
+    select q.not_before - now() into delay_later
+      from public.pdf_artifact_cleanup_queue q where q.id = cleanup_id;
+    if delay_later > interval '1 hour' + interval '1 minute' then
+      failures := array_append(failures,
+        format('backoff is unbounded: %s', delay_later));
+    end if;
+
+    -- The row must survive: it exists because an object still needs deleting.
+    checks := checks + 1;
+    if not exists (select 1 from public.pdf_artifact_cleanup_queue where id = cleanup_id) then
+      failures := array_append(failures, 'a failing cleanup row was discarded');
+    end if;
+  end;
+
+  ---------------------------------------------------------------------------
   -- Every public table carries RLS.
   ---------------------------------------------------------------------------
   checks := checks + 1;
