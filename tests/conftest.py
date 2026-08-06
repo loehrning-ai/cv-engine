@@ -2149,6 +2149,22 @@ def _review_token_secret_for_tests(monkeypatch):
     monkeypatch.setenv("ONEPAGER_REVIEW_TOKEN_SECRET", "onepager-test-review-secret")
 
 
+@pytest.fixture(autouse=True)
+def _reset_pending_cleanup_throttle():
+    """Keep the read-path cleanup drain deterministic across the session.
+
+    `server` is imported once per session, so its rate-limit timestamp would
+    otherwise carry from whichever test drained the outbox first and silently
+    suppress the drain in every test that ran within the next minute.
+    """
+    import importlib
+
+    try:
+        importlib.import_module("server")._reset_pending_cleanup_throttle()
+    except Exception:  # noqa: BLE001 — suites that never import server
+        pass
+
+
 @pytest.fixture
 def server_module():
     import importlib

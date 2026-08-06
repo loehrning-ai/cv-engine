@@ -113,6 +113,26 @@ def test_release_compose_removes_builds_and_requires_immutable_images():
     assert "onepager-caddy:2.11.4" not in release
 
 
+def test_app_refuses_the_gunicorn_control_socket():
+    """No management socket in the production image.
+
+    gunicorn 26 added a control socket defaulting to $HOME/.gunicorn. The
+    read-only rootfs makes creating it fail, so the container is safe today —
+    but only incidentally, and it logs an ERROR on every boot. Make /app
+    writable and the container would quietly start exposing a control
+    interface, so the refusal is explicit.
+    """
+    dockerfile = _read("Dockerfile")
+
+    assert "--no-control-socket" in dockerfile
+    cmd = next(
+        line for line in dockerfile.splitlines()
+        if line.startswith("CMD [") and "gunicorn" in line
+    )
+    assert '"--no-control-socket"' in cmd, cmd
+    assert "--control-socket" not in cmd.replace("--no-control-socket", "")
+
+
 def test_workflow_pull_policy_assertions_match_the_compose_service_count():
     """Keep the CI/deploy pull_policy gates tied to the real service list.
 

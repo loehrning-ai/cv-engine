@@ -67,4 +67,9 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
 
 # Override with `python3.13 engine/build.py` for the CLI renderer or
 # `python3.13 tools/editor/account_purge_worker.py` for the erasure worker.
-CMD ["python3.13", "-m", "gunicorn", "--bind", "0.0.0.0:8000", "--workers", "1", "--timeout", "120", "tools.editor.server:app"]
+# --no-control-socket: gunicorn 26 added a management socket that defaults to
+# $HOME/.gunicorn/gunicorn.ctl. The read-only rootfs already makes that fail,
+# but it fails LOUDLY (an ERROR on every boot) and only incidentally — make
+# /app writable one day and the container would quietly start exposing a
+# control interface. Refuse it explicitly instead.
+CMD ["python3.13", "-m", "gunicorn", "--bind", "0.0.0.0:8000", "--workers", "1", "--timeout", "120", "--no-control-socket", "tools.editor.server:app"]

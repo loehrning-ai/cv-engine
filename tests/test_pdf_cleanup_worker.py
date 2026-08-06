@@ -817,3 +817,75 @@ class TestConfigurationAndLogging:
         assert worker_mod.main([], {}) == 2
         assert "RuntimeError" in caplog.text
         assert secret not in caplog.text
+
+
+class TestReadPathDrainIsThrottled:
+    """The in-request outbox drain must not scale with library read traffic.
+
+    The dedicated worker owns the durable queue; the drain inside
+    ``GET /api/cvs`` and ``GET /api/cover-letters`` is only the fallback for
+    deployments that do not run it. Unthrottled, every list request could block
+    on up to ten sequential R2 deletes, putting object-store latency directly on
+    the user's library view.
+    """
+
+    def _server(self, monkeypatch):
+        import server as server_mod
+
+        monkeypatch.setattr(server_mod, "_last_pending_cleanup_at", 0.0)
+        monkeypatch.setattr(server_mod, "_artifact_cleanup_applies", lambda: True)
+        return server_mod
+
+    def test_batch_is_small_and_drain_is_rate_limited(self, monkeypatch):
+        server_mod = self._server(monkeypatch)
+        calls: list[int] = []
+
+        def _drain(*, limit: int) -> int:
+            calls.append(limit)
+            return 0
+
+        monkeypatch.setattr(
+            server_mod.pdf_store, "retry_pending_artifact_cleanup", _drain
+        )
+        clock = {"now": 1_000.0}
+        monkeypatch.setattr(server_mod.time, "monotonic", lambda: clock["now"])
+
+        server_mod._retry_pending_pdf_artifacts_best_effort()
+        server_mod._retry_pending_pdf_artifacts_best_effort()
+        server_mod._retry_pending_pdf_artifacts_best_effort()
+        assert calls == [server_mod._PENDING_CLEANUP_BATCH], calls
+        assert server_mod._PENDING_CLEANUP_BATCH <= 3
+
+        clock["now"] += server_mod._PENDING_CLEANUP_MIN_INTERVAL_S + 1
+        server_mod._retry_pending_pdf_artifacts_best_effort()
+        assert len(calls) == 2, calls
+
+    def test_a_failing_backend_does_not_retry_on_every_read(self, monkeypatch):
+        """The throttle stamps before the attempt, not after a success."""
+        server_mod = self._server(monkeypatch)
+        calls: list[int] = []
+
+        def _boom(*, limit: int) -> int:
+            calls.append(limit)
+            raise RuntimeError("object store unavailable")
+
+        monkeypatch.setattr(
+            server_mod.pdf_store, "retry_pending_artifact_cleanup", _boom
+        )
+        monkeypatch.setattr(server_mod.time, "monotonic", lambda: 2_000.0)
+
+        for _ in range(5):
+            assert server_mod._retry_pending_pdf_artifacts_best_effort() == 0
+        assert len(calls) == 1, calls
+
+    def test_demo_shell_never_drains(self, monkeypatch):
+        server_mod = self._server(monkeypatch)
+        monkeypatch.setattr(server_mod, "_artifact_cleanup_applies", lambda: False)
+
+        def _never(**_kwargs):
+            raise AssertionError("demo shell reached the durable cleanup queue")
+
+        monkeypatch.setattr(
+            server_mod.pdf_store, "retry_pending_artifact_cleanup", _never
+        )
+        assert server_mod._retry_pending_pdf_artifacts_best_effort() == 0
