@@ -2,7 +2,7 @@
 
 # Build the exact Caddy release as a Go module dependency so its embedded build
 # metadata proves both the Caddy version and the forced gRPC security floor.
-FROM golang:1.26.5-alpine3.23@sha256:622e56dbc11a8cfe87cafa2331e9a201877271cbff918af53d3be315f3da88cc AS caddy-builder
+FROM golang:1.26.6-alpine3.23@sha256:e57c41c1d5864341031181b0db34b9a537bb5773eb6428e4e5bdaea0f9135406 AS caddy-builder
 
 ARG CADDY_VERSION=v2.11.4
 ARG GRPC_VERSION=v1.82.1
