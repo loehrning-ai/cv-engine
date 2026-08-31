@@ -3,7 +3,7 @@
 # CV Copilot application image. Wolfi is used instead of Debian/Alpine Python
 # images so the production runtime can stay on Python 3.13 without inheriting
 # the Perl/SQLite findings present in those image families.
-FROM cgr.dev/chainguard/wolfi-base@sha256:003627df3c1e1bba0c4116afcddb314aca9594ee2328c7e876a8081a6c988b2e
+FROM cgr.dev/chainguard/wolfi-base@sha256:e624c5d5e42382ce7165ddafcbbf8e6769a24cbd02ea6114b880b05ae5ba2a8d
 
 LABEL org.opencontainers.image.title="CV Copilot application" \
       org.opencontainers.image.base.name="cgr.dev/chainguard/wolfi-base" \
