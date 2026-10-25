@@ -364,14 +364,22 @@ class TestAccentNormalizedAtLoad:
 
 class TestRailColumnDefault:
     """F12: a 7th+ section on the sidebar template stays in the wide main
-    column by default instead of being auto-placed by the grid."""
+    column instead of being auto-placed by the grid. Placement is now by
+    YAML key (templates.RAIL_SIDE_KEYS), so any custom section lands in
+    ``.rail-main``; tests/test_sidebar_rail.py covers the layout itself."""
 
-    def test_rail_sections_have_default_grid_column(self) -> None:
-        css = css_base.build_css("file:///tmp", "#111111", font="sans")
-        base_rule_at = css.find(".template-sidebar .layout-rail section {")
-        assert base_rule_at != -1
-        block = css[base_rule_at : css.find("}", base_rule_at)]
-        assert "grid-column: 2;" in block
+    def test_custom_rail_section_goes_to_main_column(self) -> None:
+        from render import templates
+
+        cv = {
+            "name": "T",
+            "experience": [{"role": "R", "company": "C", "start": "1", "end": "2"}],
+            "skills": [{"label": "Data", "items": "SQL"}],
+            "talks": [{"title": "Seventh section"}],
+        }
+        body = templates.render_body(cv, "normal", renderer="rail")
+        main = body.split('<div class="rail-main">', 1)[1].split('<div class="rail-side">', 1)[0]
+        assert 'id="sec-talks"' in main
 
 
 class TestNonStringFontDensityGracefulError:

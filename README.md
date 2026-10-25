@@ -282,6 +282,7 @@ template: classic           # classic | modern | sidebar | executive | technical
 accent: '#0866FF'
 font: sans                  # serif | sans | mono
 density: normal             # tight | normal | airy
+lang: en                    # en | de: headings, "to"/"bis" in date ranges, <html lang>
 
 contact:
   - { network: mail,     username: alex.hartman@example.com }
@@ -308,6 +309,14 @@ education:
 skills:
   - { label: Languages, items: 'Go, Python, Rust, TypeScript, SQL' }
 ```
+
+`lang` only changes the words the engine adds itself. Write your own text,
+including an open end date such as `heute`, in the language you want. With
+`lang: de` the headings read Berufserfahrung, Ausbildung, Kenntnisse,
+Projekte, Führung und Engagement and Sonstiges, and `04/2024` + `heute`
+prints as `04/2024 bis heute`. The YAML keys stay the same (`experience`,
+`education`, ...). `content/examples/` holds the same invented person in
+English and German.
 
 `**bold**`, `*italic*`, and `` `code` `` work in any free-text string; HTML is escaped. Section render order lives in `engine/render/sections.py`. Empty sections are silently skipped.
 

@@ -1,0 +1,65 @@
+# Invented person for examples and tests. Every name, company and contact
+# detail is made up; example.com addresses never reach anyone.
+name: Mira Kessler
+accent: '#B73A15'
+font: sans
+density: normal
+lang: en
+template: classic
+contact:
+  - network: mail
+    username: mira.kessler@example.com
+  - network: web
+    username: mira-kessler.example.com
+    label: mira-kessler.example.com
+  - network: github
+    username: mira-kessler-example
+    label: GitHub
+  - label: Leipzig, Germany
+experience:
+  - role: Data Engineer, Procurement and Warehouse
+    company: Musterwerk Maschinenbau GmbH
+    location: Leipzig
+    start: 04/2024
+    end: Present
+    bullets:
+      - Merged supplier master data from three ERP tenants into one table; duplicates down from 11% to under 1%.
+      - Replaced a two-day manual stock report with a tested dbt run that lands at 06:00 every Monday.
+      - Prepared the data release for the first AI pilot (quote review), with personal fields removed before handover.
+    stack: SQL, Python, dbt, PostgreSQL, Airflow
+  - role: Working Student, Controlling
+    company: Beispiel Logistik AG
+    location: Halle (Saale)
+    start: 10/2022
+    end: 03/2024
+    bullets:
+      - Recomputed freight cost per shipment from 40,000 invoice lines a month and found two mis-tariffed lanes.
+      - Replaced Excel macros with a documented Python script colleagues run themselves.
+    stack: Python, pandas, Excel, Power BI
+education:
+  - degree: M.Sc. Information Systems
+    school: Universität Musterstadt
+    location: Musterstadt
+    start: 10/2021
+    end: 03/2024
+  - degree: B.Sc. Business Administration
+    school: Hochschule Musterstadt
+    location: Musterstadt
+    start: 10/2017
+    end: 09/2021
+skills:
+  - label: Data
+    items: SQL, dbt, PostgreSQL, Airflow, DuckDB
+  - label: Programming
+    items: Python, pandas, Git, Docker
+  - label: Methods
+    items: Data quality, master data, cost accounting
+  - label: Languages
+    items: German (native), English (C1), Polish (B1)
+projects:
+  - title: Supplier duplicate finder
+    date: '2025'
+    desc: Open notebook that groups similar supplier names by edit distance and explains every merge.
+  - title: Stock traffic light
+    date: '2024'
+    desc: One page per warehouse, three colours, one number. Replaces a 14-page PDF report.
