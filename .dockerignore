@@ -4,6 +4,10 @@
 
 # Python build / cache artifacts
 .venv
+# CI creates .venv-app/.venv-audit/.venv-browser in the build context; their
+# runner-bundled pip vendors outdated certifi/urllib3/msgpack that the
+# release-image CVE gate (rightly) rejects. Never copy them into the image.
+.venv-*/
 __pycache__
 *.pyc
 .pytest_cache/

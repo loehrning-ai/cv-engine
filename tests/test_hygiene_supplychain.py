@@ -56,6 +56,7 @@ def test_dockerignore_excludes_internal_docs_and_personal_data():
         "*.local.md",
         "content/cv.yaml",
         "design/photos/",
+        ".venv-*/",
         ".pytest_cache/",
         ".ruff_cache/",
         ".mypy_cache/",
