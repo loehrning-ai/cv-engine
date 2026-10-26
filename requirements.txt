@@ -1,17 +1,17 @@
 # Core renderer + editor
 flask>=3.1.3,<4.0
 pyyaml>=6.0,<7.0
-weasyprint>=69.0,<70.0
+weasyprint>=70.0,<71.0
 
 # Imports
-pypdf>=6.13.3,<7.0        # PDF text extraction
+pypdf>=6.21.2,<7.0        # PDF text extraction
 defusedxml>=0.7.1,<0.8.0  # reject DTD/entity expansion in untrusted DOCX XML
 
 # Image validation for the photo upload + inline data:-URI guard: magic-byte
 # type check (PNG/JPEG/WebP, reject SVG) + header-only decoded-dimension caps
 # to block decompression bombs. Pillow arrives transitively via WeasyPrint, but
 # the photo guard depends on it DIRECTLY, so pin it explicitly.
-pillow>=12.3.0,<13.0
+pillow>=13.0.0,<14.0
 
 # Optional: AI extract via Claude (only required if you set ANTHROPIC_API_KEY)
 anthropic>=0.117.0,<1.0
@@ -28,8 +28,8 @@ python-dotenv>=1.0,<2.0    # load .env (ANTHROPIC_API_KEY, future Supabase/R2/KE
 
 # Cloud: Supabase auth + per-user storage (Stage 2)
 supabase>=2.0,<3.0         # supabase-py client; PostgREST runs under the user JWT (RLS)
-pyjwt[crypto]>=2.8,<3.0    # verify Supabase JWT via JWKS (ES256/RS256); pulls in cryptography
-cryptography>=48.0.1,<49.0 # AES-256-GCM envelope encryption for BYO LLM keys (Stage 4)
+pyjwt[crypto]>=2.15.1,<3.0 # verify Supabase JWT via JWKS (ES256/RS256); pulls in cryptography
+cryptography>=50.0.2,<51.0 # AES-256-GCM envelope encryption for BYO LLM keys (Stage 4)
 pyasn1>=0.6.4,<0.7.0       # security floor for the ASN.1 dependency used by auth stacks
 
 # Cloud: BYO-key vault + rate limiting (Stage 4)
