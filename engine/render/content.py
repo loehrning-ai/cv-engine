@@ -11,6 +11,9 @@ Schema (see ``content/cv.yaml`` for an example):
     paper:       "white" | "creme" | "soft-gray" | "blue-tint"
                  (optional, default ``white``)
     photo:       str relative path to image (optional)
+    lang:        "en" | "de"  (optional, default ``en``): the language of the
+                 words the engine adds: section headings, the date-range
+                 connector ("to" / "bis"), the title and ``<html lang>``
 
 Sections (defined in ``engine/render/sections.py``):
     experience, education, skills, projects, leadership, others, …
@@ -28,7 +31,7 @@ from typing import Any
 
 import yaml
 
-from . import brand_icons, css_base, resource_policy, template_registry
+from . import brand_icons, css_base, labels, resource_policy, template_registry
 from .sections import DEFAULT_SECTIONS
 from .yaml_guard import reject_aliased_graphs
 
@@ -156,6 +159,13 @@ def load(
         )
     cv["template"] = normalized_template
     cv["paper"] = css_base.normalize_paper(cv.get("paper"))
+    if "lang" in cv:
+        # Only normalised when present, so a CV without ``lang`` loads into
+        # exactly the same model as before the field existed.
+        try:
+            cv["lang"] = labels.normalize_lang(cv.get("lang"))
+        except ValueError as exc:
+            raise ValueError(f"{path}: {exc}") from None
     if "photo" in cv:
         cv["photo"] = _validate_photo(cv.get("photo"), path, owner_id=owner_id)
     return cv
@@ -259,6 +269,7 @@ _OUTLINE_RESERVED_TOP_LEVEL = frozenset(
     {
         "name", "contact", "accent", "font", "density", "template", "photo",
         "section_order", "optional_sections", "contact_layout", "header_layout", "photo_layout",
+        "lang",
     }
 )
 

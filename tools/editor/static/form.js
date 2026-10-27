@@ -1350,6 +1350,7 @@
   const RESERVED_TOP_LEVEL = new Set([
     "name", "contact", "accent", "font", "density", "template", "paper", "photo",
     "section_order", "optional_sections", "contact_layout", "header_layout", "photo_layout",
+    "lang",
   ]);
 
   function orderedSectionDefs(model, defs) {

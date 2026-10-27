@@ -5,10 +5,9 @@ COMPLETE template x density matrix on the example CV so a typography or
 spacing change that silently pushes any combination over the 1-page
 boundary fails loudly.
 
-Known pre-existing condition (baselined 2026-07-05, BEFORE the stage-5
-typography change): ``sidebar x airy`` reports a sub-page overflow flag
-(page_count still 1). The gate holds every other combo to fully clean and
-holds sidebar x airy to "no worse".
+``sidebar x airy`` used to report a sub-page overflow flag (page_count
+still 1). The two-column rail fixed it, so every combination is now held to
+fully clean.
 """
 
 from __future__ import annotations
@@ -21,9 +20,9 @@ REPO = Path(__file__).resolve().parent.parent
 
 DENSITIES = ("tight", "normal", "airy")
 
-# (template, density) combos allowed a sub-page overflow flag — pre-existing
-# before plan 108 stage 5; anything NOT listed here must be fully clean.
-KNOWN_OVERFLOW_FLAGS = {("sidebar", "airy")}
+# (template, density) combos allowed a sub-page overflow flag. Empty: every
+# combination must be fully clean.
+KNOWN_OVERFLOW_FLAGS: set[tuple[str, str]] = set()
 
 
 def _with_template(yaml_text: str, template_id: str) -> str:

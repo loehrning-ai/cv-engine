@@ -234,7 +234,12 @@ html, body {{
   top: 0;
   left: 0;
   width: 3mm;
-  height: 100%;
+  /* The full sheet, not height: 100%: .page has only a min-height, and
+     WeasyPrint resolves a percentage (or top + bottom) against the CONTENT
+     height, so the bar used to stop wherever the text stopped. The CV is
+     exactly one A4 sheet by contract, so the sheet height is the right
+     length in the PDF and in the browser preview alike. */
+  height: var(--page-h);
   background: var(--accent-rail);
   opacity: 0.78;
 }}
@@ -538,37 +543,46 @@ p, li {{ orphans: 3; widows: 3; }}
   padding-left: 5px;
   border-left: 2pt solid var(--rule);
 }}
-.template-sidebar .skills-grid {{
-  grid-template-columns: 22mm 1fr;
-}}
+/* Two real columns (templates.render_body, RAIL_SIDE_KEYS): .rail-main holds
+   experience, projects and every other section; .rail-side holds education
+   and skills. Each column is its own block flow, so a long main column never
+   stretches the side column's rows. The main column comes first in the
+   source (reading order for ATS parsers); grid-row/column place it right. */
 .template-sidebar .layout-rail {{
   display: grid;
-  grid-template-columns: 45mm minmax(0, 1fr);
-  gap: 4mm;
+  grid-template-columns: 50mm minmax(0, 1fr);
+  column-gap: 5mm;
   align-items: start;
 }}
-.template-sidebar .layout-rail section {{
-  min-width: 0;
-  /* Positional contract: columns are assigned by DEFAULT_SECTIONS order
-     (sections.py) via the nth-child rules below — sidebar deliberately
-     excludes section_order from customization_axes for this reason. The
-     default keeps any 7th+ section in the wide main column instead of
-     letting the grid auto-place it unpredictably (plan 107, F12). */
-  grid-column: 2;
-}}
-.template-sidebar .layout-rail section:nth-child(2),
-.template-sidebar .layout-rail section:nth-child(3),
-.template-sidebar .layout-rail section:nth-child(5) {{
-  grid-column: 1;
-}}
-.template-sidebar .layout-rail section:nth-child(1),
-.template-sidebar .layout-rail section:nth-child(4),
-.template-sidebar .layout-rail section:nth-child(6) {{
-  grid-column: 2;
-}}
+.template-sidebar .rail-main {{ grid-column: 2; grid-row: 1; min-width: 0; }}
+.template-sidebar .rail-side {{ grid-column: 1; grid-row: 1; min-width: 0; }}
+/* Only one column has content: let it use the whole width. */
+.template-sidebar .layout-rail > :only-child {{ grid-column: 1 / -1; }}
 .template-sidebar .layout-rail .section-title {{
   margin-top: 0;
 }}
+/* The side column is too narrow for "school ... location" on one line:
+   stack name, degree, place and dates instead of squeezing them. */
+.template-sidebar .rail-side .item-head,
+.template-sidebar .rail-side .item-sub {{
+  display: block;
+}}
+.template-sidebar .rail-side .item-head .right,
+.template-sidebar .rail-side .item-sub .right {{
+  display: block;
+  font-style: normal;
+  color: var(--muted);
+  white-space: normal;
+}}
+.template-sidebar .rail-side .item {{ margin-bottom: 4px; }}
+.template-sidebar .rail-side section + section {{ margin-top: 6px; }}
+.template-sidebar .rail-side .skills-grid {{
+  display: block;
+}}
+.template-sidebar .rail-side .skills-grid dt {{
+  margin-top: 3px;
+}}
+.template-sidebar .rail-side .skills-grid dt:first-child {{ margin-top: 0; }}
 
 .template-executive {{
   --page-pad-x: 17mm;

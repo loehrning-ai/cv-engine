@@ -19,7 +19,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from . import template_registry
+from . import labels, template_registry
 from .markdown_inline import inline as md
 from .markdown_inline import _is_safe_url
 
@@ -70,10 +70,10 @@ def _section_id(slug: str) -> str:
     return cleaned or "custom-section"
 
 
-def _date_range(start: str, end: str) -> str:
+def _date_range(start: str, end: str, lang: str = labels.DEFAULT_LANG) -> str:
     s, e = _esc(start), _esc(end)
     if s and e:
-        return f"{s} to {e}"
+        return f"{s} {labels.labels_for(lang)['date_connector']} {e}"
     return s or e
 
 
@@ -134,11 +134,11 @@ def _layout_value(value: Any, allowed: set[str], default: str) -> str:
     return cleaned if cleaned in allowed else default
 
 
-def _experience_item(item: dict[str, Any]) -> str:
+def _experience_item(item: dict[str, Any], lang: str = labels.DEFAULT_LANG) -> str:
     company = _esc(item.get("company", ""))
     location = _esc(item.get("location", ""))
     role = _esc(item.get("role", "") or item.get("title", ""))
-    dates = _date_range(item.get("start", ""), item.get("end", ""))
+    dates = _date_range(item.get("start", ""), item.get("end", ""), lang)
     # Prune empty / whitespace-only bullets so an in-progress ``bullets: ['']``
     # (an unfilled row saved from the form) never renders a stray empty <li>
     # dot in the preview or the printed PDF.
@@ -156,11 +156,11 @@ def _experience_item(item: dict[str, Any]) -> str:
 </div>"""
 
 
-def _education_item(item: dict[str, Any]) -> str:
+def _education_item(item: dict[str, Any], lang: str = labels.DEFAULT_LANG) -> str:
     school = _esc(item.get("school", ""))
     location = _esc(item.get("location", ""))
     degree = _esc(item.get("degree", "") or item.get("title", ""))
-    dates = _date_range(item.get("start", ""), item.get("end", ""))
+    dates = _date_range(item.get("start", ""), item.get("end", ""), lang)
     note = item.get("note")
     note_block = (
         f'<ul class="bullets"><li>{md(note)}</li></ul>' if note else ""
@@ -180,7 +180,7 @@ def _skills_grid(items: list[dict[str, str]]) -> str:
     return f'<dl class="skills-grid">{"".join(rows)}</dl>'
 
 
-def _compact_row(item: dict[str, Any] | Any) -> str:
+def _compact_row(item: dict[str, Any] | Any, lang: str = labels.DEFAULT_LANG) -> str:
     if not isinstance(item, dict):
         item = {"title": str(item)}
     raw_title = item.get("title") or item.get("name") or item.get("label") or item.get("items") or item.get("desc") or ""
@@ -195,7 +195,7 @@ def _compact_row(item: dict[str, Any] | Any) -> str:
 </div>"""
 
 
-def _publication_item(item: dict[str, Any]) -> str:
+def _publication_item(item: dict[str, Any], lang: str = labels.DEFAULT_LANG) -> str:
     """Two-line publication entry: title/date on top, authors/venue on row 2.
 
     Required: title.
@@ -204,7 +204,12 @@ def _publication_item(item: dict[str, Any]) -> str:
     Renders as a compact "row + sub" combo, similar to experience but
     much terser — academics cram many of these onto a page.
     """
-    title = _esc(item.get("title") or item.get("name") or item.get("venue") or "Publication")
+    title = _esc(
+        item.get("title")
+        or item.get("name")
+        or item.get("venue")
+        or labels.labels_for(lang)["publication_fallback"]
+    )
     date = _esc(item.get("date", ""))
     authors = item.get("authors")
     venue = item.get("venue")
@@ -276,6 +281,7 @@ def _section(slug: str, title: str, body_html: str) -> str:
 _RESERVED_TOP_LEVEL = frozenset({
     "name", "contact", "accent", "font", "density", "template", "paper", "photo",
     "section_order", "optional_sections", "contact_layout", "header_layout", "photo_layout",
+    "lang",
 })
 
 
@@ -315,11 +321,24 @@ def humanize_key(key: str) -> str:
     return " ".join(out)
 
 
+# Sections the sidebar template puts in its narrow left column. Everything
+# else (experience, projects, leadership, others and any custom section)
+# goes to the wide main column. Placement is by key, not by position, so a
+# missing section never shifts another one into the wrong column.
+RAIL_SIDE_KEYS: tuple[str, ...] = ("education", "skills")
+
+
 def _render_sections(cv: dict[str, Any]) -> list[str]:
+    return [html for _key, html in _render_keyed_sections(cv)]
+
+
+def _render_keyed_sections(cv: dict[str, Any]) -> list[tuple[str, str]]:
+    """Render every non-empty section as ``(yaml_key, html)`` in page order."""
     from .sections import DEFAULT_SECTIONS
 
-    parts: list[str] = []
+    parts: list[tuple[str, str]] = []
     rendered_keys: set[str] = set()
+    lang = labels.resolve_lang(cv.get("lang"))
 
     for section in _ordered_default_sections(cv, DEFAULT_SECTIONS):
         items = cv.get(section.key)
@@ -343,8 +362,11 @@ def _render_sections(cv: dict[str, Any]) -> list[str]:
             ]
             if not items:
                 continue
-        body_html = _render_section_body(section.shape, items)
-        parts.append(_section(section.key, section.label, body_html))
+        body_html = _render_section_body(section.shape, items, lang)
+        parts.append((
+            section.key,
+            _section(section.key, labels.section_label(lang, section.key, section.label), body_html),
+        ))
 
     # Custom sections — anything else the user added.
     for key, items in cv.items():
@@ -363,8 +385,8 @@ def _render_sections(cv: dict[str, Any]) -> list[str]:
             continue
         shape = detect_shape(items)
         label = humanize_key(key)
-        body_html = _render_section_body(shape, items)
-        parts.append(_section(key, label, body_html))
+        body_html = _render_section_body(shape, items, lang)
+        parts.append((key, _section(key, label, body_html)))
 
     return parts
 
@@ -378,15 +400,28 @@ def render_body(cv: dict[str, Any], density: str = "normal", renderer: str = "st
 
     Skips sections with no items.
     """
-    sections = _render_sections(cv)
+    keyed = _render_keyed_sections(cv)
     if renderer == "rail":
+        # Two real columns, each a normal block flow, so a long column never
+        # stretches the rows of the other one. The main column comes first in
+        # the source so text extraction (ATS parsers, screen readers) reads
+        # the experience before the sidebar; CSS places the side on the left.
+        # An empty column is left out, and CSS lets the remaining one span
+        # the full width instead of leaving a blank strip.
+        main = [html for key, html in keyed if key not in RAIL_SIDE_KEYS]
+        side = [html for key, html in keyed if key in RAIL_SIDE_KEYS]
+        columns: list[str] = []
+        if main:
+            columns.extend(['<div class="rail-main">', *main, "</div>"])
+        if side:
+            columns.extend(['<div class="rail-side">', *side, "</div>"])
         return "\n".join([
             _header(cv),
             '<div class="layout-rail" data-renderer="rail">',
-            *sections,
+            *columns,
             "</div>",
         ])
-    return "\n".join([_header(cv), *sections])
+    return "\n".join([_header(cv), *(html for _key, html in keyed)])
 
 
 def _ordered_default_sections(cv: dict[str, Any], defaults: list[Any]) -> list[Any]:
@@ -405,27 +440,29 @@ def _ordered_default_sections(cv: dict[str, Any], defaults: list[Any]) -> list[A
     return ordered
 
 
-def _render_section_body(shape: str, items: list[Any]) -> str:
+def _render_section_body(shape: str, items: list[Any], lang: str = labels.DEFAULT_LANG) -> str:
     """Pick the renderer (whole-list vs per-item) and produce the body HTML."""
     whole_list = _WHOLE_LIST_RENDERERS.get(shape)
     if whole_list is not None:
         return whole_list(items)
     per_item = _PER_ITEM_RENDERERS.get(shape, _compact_row)
-    return "".join(per_item(i) for i in items)
+    return "".join(per_item(i, lang) for i in items)
 
 
 def render_document(cv: dict[str, Any], css: str, density: str = "normal") -> str:
     """Return a full HTML document ready for WeasyPrint or browser preview."""
     name = _esc(cv["name"])
+    lang = labels.resolve_lang(cv.get("lang"))
+    title = labels.labels_for(lang)["document_title"].format(name=name)
     template = template_registry.normalize_template(cv.get("template"))
     spec = template_registry.template_spec(template)
     body = render_body(cv, density, renderer=spec.renderer)
     paper = _esc(str(cv.get("paper") or "white"))
     return f"""<!DOCTYPE html>
-<html lang="en">
+<html lang="{lang}">
 <head>
 <meta charset="UTF-8">
-<title>{name} — CV</title>
+<title>{title}</title>
 <style>{css}</style>
 </head>
 <body class="template-{template} paper-{paper}">

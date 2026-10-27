@@ -1,0 +1,65 @@
+# Erfundene Person für Beispiele und Tests. Alle Namen, Firmen und
+# Kontaktdaten sind ausgedacht; example.com-Adressen erreichen niemanden.
+name: Mira Kessler
+accent: '#B73A15'
+font: sans
+density: normal
+lang: de
+template: classic
+contact:
+  - network: mail
+    username: mira.kessler@example.com
+  - network: web
+    username: mira-kessler.example.com
+    label: mira-kessler.example.com
+  - network: github
+    username: mira-kessler-example
+    label: GitHub
+  - label: Leipzig
+experience:
+  - role: Data Engineer, Einkauf und Lager
+    company: Musterwerk Maschinenbau GmbH
+    location: Leipzig
+    start: 04/2024
+    end: heute
+    bullets:
+      - Lieferantenstammdaten aus drei ERP-Mandanten zu einer Tabelle zusammengeführt; Dubletten von 11 % auf unter 1 % gesenkt.
+      - Wöchentlichen Bestandsbericht von zwei Tagen Handarbeit auf einen geprüften dbt-Lauf um 06:00 Uhr umgestellt.
+      - Datenfreigabe für den ersten KI-Piloten (Angebotsprüfung) vorbereitet; Felder mit Personenbezug vorher entfernt.
+    stack: SQL, Python, dbt, PostgreSQL, Airflow
+  - role: Werkstudentin Controlling
+    company: Beispiel Logistik AG
+    location: Halle (Saale)
+    start: 10/2022
+    end: 03/2024
+    bullets:
+      - Frachtkosten je Sendung aus 40.000 Rechnungszeilen pro Monat nachgerechnet und zwei falsch tarifierte Relationen gefunden.
+      - Excel-Makros durch ein dokumentiertes Python-Skript ersetzt, das die Kollegen selbst ausführen.
+    stack: Python, pandas, Excel, Power BI
+education:
+  - degree: M.Sc. Wirtschaftsinformatik
+    school: Universität Musterstadt
+    location: Musterstadt
+    start: 10/2021
+    end: 03/2024
+  - degree: B.Sc. Betriebswirtschaftslehre
+    school: Hochschule Musterstadt
+    location: Musterstadt
+    start: 10/2017
+    end: 09/2021
+skills:
+  - label: Daten
+    items: SQL, dbt, PostgreSQL, Airflow, DuckDB
+  - label: Programmierung
+    items: Python, pandas, Git, Docker
+  - label: Methoden
+    items: Datenqualität, Stammdaten, Kostenrechnung
+  - label: Sprachen
+    items: Deutsch (Muttersprache), Englisch (C1), Polnisch (B1)
+projects:
+  - title: Lieferanten-Dubletten finden
+    date: '2025'
+    desc: Offenes Notebook, das ähnliche Lieferantennamen per Abstandsmaß gruppiert und jede Zusammenführung begründet.
+  - title: Bestandsampel
+    date: '2024'
+    desc: Eine Seite pro Lager, drei Farben, eine Zahl. Ersetzt einen 14-seitigen PDF-Bericht.
