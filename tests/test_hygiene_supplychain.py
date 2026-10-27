@@ -56,6 +56,7 @@ def test_dockerignore_excludes_internal_docs_and_personal_data():
         "*.local.md",
         "content/cv.yaml",
         "design/photos/",
+        ".venv-*/",
         ".pytest_cache/",
         ".ruff_cache/",
         ".mypy_cache/",
@@ -387,7 +388,7 @@ def test_bundled_fonts_ship_with_their_license_notices():
     inter_license = _read("LICENSES/Inter-OFL.txt")
     source_serif_license = _read("LICENSES/SourceSerif4-OFL.txt")
     codemirror_license = _read("LICENSES/codemirror-5.65.21-MIT.txt")
-    js_yaml_license = _read("LICENSES/js-yaml-4.3.0-MIT.txt")
+    js_yaml_license = _read("LICENSES/js-yaml-4.3.2-MIT.txt")
     pagedjs_license = _read("LICENSES/pagedjs-0.4.3-MIT.txt")
     pagedjs_bundled = _read(
         "LICENSES/pagedjs-0.4.3-bundled-dependencies.txt"
@@ -411,7 +412,7 @@ def test_bundled_fonts_ship_with_their_license_notices():
     assert "LICENSES/Inter-OFL.txt" in notices
     assert "LICENSES/SourceSerif4-OFL.txt" in notices
     assert "LICENSES/codemirror-5.65.21-MIT.txt" in notices
-    assert "LICENSES/js-yaml-4.3.0-MIT.txt" in notices
+    assert "LICENSES/js-yaml-4.3.2-MIT.txt" in notices
     assert "LICENSES/pagedjs-0.4.3-MIT.txt" in notices
     assert "LICENSES/pagedjs-0.4.3-bundled-dependencies.txt" in notices
     assert "supabase-js-2.110.0.LICENSE.txt" in notices
@@ -484,16 +485,17 @@ def test_icon_assets_are_neutral_pinned_and_licensed():
 def test_browser_yaml_runtime_is_patched_and_local():
     index = _read("tools/editor/static/index.html")
 
-    assert "/static/vendor/js-yaml-4.3.0/js-yaml.min.js" in index
+    assert "/static/vendor/js-yaml-4.3.2/js-yaml.min.js" in index
     assert "js-yaml@4.1.0" not in index
     assert "js-yaml@4.1.1" not in index
-    assert (REPO / "tools/editor/static/vendor/js-yaml-4.3.0/js-yaml.min.js").is_file()
+    assert (REPO / "tools/editor/static/vendor/js-yaml-4.3.2/js-yaml.min.js").is_file()
     assert not (REPO / "tests/e2e/vendor/js-yaml-4.3.0.min.js").exists()
+    assert not (REPO / "tools/editor/static/vendor/js-yaml-4.3.0").exists()
     assert not (REPO / "tests/e2e/vendor/js-yaml-4.1.0.min.js").exists()
     assert not (REPO / "tests/e2e/vendor/js-yaml-4.1.1.min.js").exists()
 
     pollution_probe = """
-const yaml = require("./tools/editor/static/vendor/js-yaml-4.3.0/js-yaml.min.js");
+const yaml = require("./tools/editor/static/vendor/js-yaml-4.3.2/js-yaml.min.js");
 delete Object.prototype.polluted;
 yaml.load("base: &base\\n  __proto__:\\n    polluted: true\\ntarget:\\n  <<: *base\\n");
 if (Object.prototype.polluted !== undefined || ({}).polluted !== undefined) {
@@ -535,7 +537,7 @@ def test_browser_vendor_lock_covers_every_runtime_js_and_css_byte():
     } == {
         "@supabase/supabase-js": "2.110.0",
         "codemirror": "5.65.21",
-        "js-yaml": "4.3.0",
+        "js-yaml": "4.3.2",
         "pagedjs": "0.4.3",
     }
     pagedjs = manifest["packages"]["pagedjs"]
@@ -594,7 +596,7 @@ def test_production_browser_runtime_has_no_executable_or_stylesheet_cdn():
         assert "unpkg.com" not in source
 
     assert "codemirror-5.65.21" in index
-    assert "/static/vendor/js-yaml-4.3.0/js-yaml.min.js" in index
+    assert "/static/vendor/js-yaml-4.3.2/js-yaml.min.js" in index
     assert 'PAGEDJS_PATH = "/static/vendor/pagedjs-0.4.3/paged.polyfill.js"' in preview
 
     remote_executable = re.compile(

@@ -2,15 +2,24 @@
 
 # Build the exact Caddy release as a Go module dependency so its embedded build
 # metadata proves both the Caddy version and the forced gRPC security floor.
-FROM golang:1.26.5-alpine3.23@sha256:622e56dbc11a8cfe87cafa2331e9a201877271cbff918af53d3be315f3da88cc AS caddy-builder
+FROM golang:1.26.10-alpine3.23@sha256:0525c952defebc693cdaf62cdf43afa32be5a7f377e99260642ea19c240c708e AS caddy-builder
 
 ARG CADDY_VERSION=v2.11.4
-ARG GRPC_VERSION=v1.82.1
+ARG GRPC_VERSION=v1.83.2
 # Caddy v2.11.4 pulls golang.org/x/text v0.37.0, which carries CVE-2026-56852
 # (HIGH). Go picks the highest required version, so requiring the patched
 # release here lifts the transitive dependency without forking Caddy. Same
 # mechanism as the grpc pin above. Drop once Caddy requires >= v0.39.0.
-ARG XTEXT_VERSION=v0.39.0
+ARG XTEXT_VERSION=v0.42.0
+# Same mechanism for the remaining transitive modules Trivy flags as HIGH in
+# the v2.11.4 module graph: x/crypto (CVE-2026-56854, fixed v0.55.0), x/net
+# (CVE-2026-78669, fixed v0.60.0) and klauspost/compress (CVE-2026-63209, fixed
+# v1.18.7). x/net v0.60.0 itself requires x/crypto v0.57.0 and x/text v0.42.0,
+# so those floors equal what Go resolves and the exact-match checks below hold.
+# Drop each once Caddy itself requires the patched release.
+ARG XCRYPTO_VERSION=v0.57.0
+ARG XNET_VERSION=v0.60.0
+ARG COMPRESS_VERSION=v1.18.7
 ENV CGO_ENABLED=0 \
     GOTOOLCHAIN=local
 WORKDIR /src
@@ -32,17 +41,23 @@ EOF
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     set -eux; \
-    test "$(go version)" = "go version go1.26.5 linux/$(go env GOARCH)"; \
+    test "$(go version)" = "go version go1.26.10 linux/$(go env GOARCH)"; \
     go mod init onepager.local/caddy; \
     go mod edit \
       -require="github.com/caddyserver/caddy/v2@${CADDY_VERSION}" \
       -require="google.golang.org/grpc@${GRPC_VERSION}" \
-      -require="golang.org/x/text@${XTEXT_VERSION}"; \
+      -require="golang.org/x/text@${XTEXT_VERSION}" \
+      -require="golang.org/x/crypto@${XCRYPTO_VERSION}" \
+      -require="golang.org/x/net@${XNET_VERSION}" \
+      -require="github.com/klauspost/compress@${COMPRESS_VERSION}"; \
     go mod tidy; \
     go list -m all > /tmp/caddy-build-modules.txt; \
     grep -Fqx "github.com/caddyserver/caddy/v2 ${CADDY_VERSION}" /tmp/caddy-build-modules.txt; \
     grep -Fqx "google.golang.org/grpc ${GRPC_VERSION}" /tmp/caddy-build-modules.txt; \
-    grep -Fqx "golang.org/x/text ${XTEXT_VERSION}" /tmp/caddy-build-modules.txt
+    grep -Fqx "golang.org/x/text ${XTEXT_VERSION}" /tmp/caddy-build-modules.txt; \
+    grep -Fqx "golang.org/x/crypto ${XCRYPTO_VERSION}" /tmp/caddy-build-modules.txt; \
+    grep -Fqx "golang.org/x/net ${XNET_VERSION}" /tmp/caddy-build-modules.txt; \
+    grep -Fqx "github.com/klauspost/compress ${COMPRESS_VERSION}" /tmp/caddy-build-modules.txt
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
@@ -57,15 +72,18 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     version_output="$(/tmp/caddy version)"; \
     test "${version_output%% *}" = "${CADDY_VERSION}"; \
     go version -m /tmp/caddy > /tmp/caddy-build-info.txt; \
-    grep -Fq "/tmp/caddy: go1.26.5" /tmp/caddy-build-info.txt; \
+    grep -Fq "/tmp/caddy: go1.26.10" /tmp/caddy-build-info.txt; \
     grep -Fq "dep	github.com/caddyserver/caddy/v2	${CADDY_VERSION}" /tmp/caddy-build-info.txt; \
     grep -Fq "dep	google.golang.org/grpc	${GRPC_VERSION}" /tmp/caddy-build-info.txt; \
     grep -Fq "dep	golang.org/x/text	${XTEXT_VERSION}" /tmp/caddy-build-info.txt; \
+    grep -Fq "dep	golang.org/x/crypto	${XCRYPTO_VERSION}" /tmp/caddy-build-info.txt; \
+    grep -Fq "dep	golang.org/x/net	${XNET_VERSION}" /tmp/caddy-build-info.txt; \
+    grep -Fq "dep	github.com/klauspost/compress	${COMPRESS_VERSION}" /tmp/caddy-build-info.txt; \
     cp "$(go env GOMODCACHE)/github.com/caddyserver/caddy/v2@${CADDY_VERSION}/LICENSE" /tmp/CADDY-LICENSE.txt
 
 # The runtime has no compiler or general-purpose HTTP client. Caddy is a static
 # binary; only the current CA bundle is added for ACME and upstream TLS.
-FROM cgr.dev/chainguard/wolfi-base@sha256:003627df3c1e1bba0c4116afcddb314aca9594ee2328c7e876a8081a6c988b2e
+FROM cgr.dev/chainguard/wolfi-base@sha256:360896efb0753a5701c48f860e17130c205eae5a264797aa3e7ea126ee2923a7
 
 LABEL org.opencontainers.image.title="CV Copilot Caddy proxy" \
       org.opencontainers.image.version="2.11.4" \
@@ -75,7 +93,7 @@ LABEL org.opencontainers.image.title="CV Copilot Caddy proxy" \
 ENV XDG_CONFIG_HOME=/config \
     XDG_DATA_HOME=/data
 
-RUN apk add --no-cache ca-certificates=20260413-r0 \
+RUN apk add --no-cache ca-certificates=20260909-r3 \
     && mkdir -p /data /config /etc/caddy /usr/share/onepager /usr/share/licenses/caddy \
     && chown -R nonroot:nonroot /data /config /etc/caddy
 

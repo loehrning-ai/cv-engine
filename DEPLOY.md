@@ -239,15 +239,15 @@ content from the transferred artifact. It extracts into
 `/opt/onepager` and keeps the previous tree at `/opt/onepager.previous`.
 
 The application image is built from the digest-pinned Wolfi base in
-`Dockerfile`. It installs Wolfi Python `3.13.14-r3`, pip `26.1.2-r1`, and
+`Dockerfile`. It installs Wolfi Python `3.13.16_git20261016-r2`, pip `26.2.2-r0`, and
 version-pinned Cairo/Pango/GDK-Pixbuf/Harfbuzz/font dependencies. Python
 packages install from `requirements.lock` with `--require-hashes`. The
 application runs as UID/GID `999:999`; this intentionally preserves ownership
 compatibility with volumes created by the retired Debian image.
 
 The proxy is not pulled from a prebuilt Caddy image. `Dockerfile.caddy` builds
-Caddy `v2.11.4` with Go `1.26.5` from a digest-pinned builder, forces
-`google.golang.org/grpc` to `v1.82.1`, and copies only the static binary,
+Caddy `v2.11.4` with Go `1.26.10` from a digest-pinned builder, forces
+`google.golang.org/grpc` to `v1.83.2`, and copies only the static binary,
 license, CA bundle, and build metadata into a second digest-pinned Wolfi
 runtime. It runs as UID/GID `65532:65532` with a read-only root filesystem.
 The production Compose services all drop Linux capabilities, enable

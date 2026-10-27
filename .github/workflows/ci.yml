@@ -120,7 +120,7 @@ jobs:
           test "$(
             docker run --rm --read-only --tmpfs /tmp \
               --entrypoint python3.13 onepager:dev --version
-          )" = "Python 3.13.14"
+          )" = "Python 3.13.16"
           test "$(
             docker run --rm --entrypoint /bin/busybox onepager:dev id -u
           )" = "999"
@@ -151,11 +151,11 @@ jobs:
           docker run --rm --entrypoint /bin/busybox \
             onepager-caddy:2.11.4 \
             cat /usr/share/onepager/caddy-build-modules.txt \
-            | grep -Fqx 'google.golang.org/grpc v1.82.1'
+            | grep -Fqx 'google.golang.org/grpc v1.83.2'
           docker run --rm --entrypoint /bin/busybox \
             onepager-caddy:2.11.4 \
             cat /usr/share/onepager/caddy-build-info.txt \
-            | grep -Fq '/tmp/caddy: go1.26.5'
+            | grep -Fq '/tmp/caddy: go1.26.10'
           if docker run --rm --entrypoint /bin/sh onepager-caddy:2.11.4 \
             -c 'command -v curl >/dev/null'; then
             echo "Caddy runtime unexpectedly contains curl" >&2

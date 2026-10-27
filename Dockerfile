@@ -3,7 +3,7 @@
 # CV Copilot application image. Wolfi is used instead of Debian/Alpine Python
 # images so the production runtime can stay on Python 3.13 without inheriting
 # the Perl/SQLite findings present in those image families.
-FROM cgr.dev/chainguard/wolfi-base@sha256:003627df3c1e1bba0c4116afcddb314aca9594ee2328c7e876a8081a6c988b2e
+FROM cgr.dev/chainguard/wolfi-base@sha256:360896efb0753a5701c48f860e17130c205eae5a264797aa3e7ea126ee2923a7
 
 LABEL org.opencontainers.image.title="CV Copilot application" \
       org.opencontainers.image.base.name="cgr.dev/chainguard/wolfi-base" \
@@ -23,15 +23,15 @@ ENV HOME=/app \
 # transitive APK/Python closure. GDK-Pixbuf is retained for the renderer/image
 # stack even though recent WeasyPrint paths primarily use Cairo and Pango.
 RUN apk add --no-cache \
-        python-3.13=3.13.14-r3 \
-        py3.13-pip=26.1.2-r1 \
+        python-3.13=3.13.16_git20261016-r2 \
+        py3.13-pip=26.2.2-r0 \
         cairo=1.18.4-r6 \
         pango=1.58.0-r2 \
         gdk-pixbuf=2.44.7-r0 \
         harfbuzz=14.2.1-r2 \
         fontconfig=2.18.2-r0 \
         font-liberation=2.1.5-r5 \
-        ca-certificates=20260413-r0 \
+        ca-certificates=20260909-r3 \
         libffi=3.7.1-r0 \
         shared-mime-info=2.5.1-r0 \
     && addgroup -S -g 999 onepager \

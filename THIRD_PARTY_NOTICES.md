@@ -8,7 +8,7 @@ Bundled third-party assets retain their own licenses:
 | Inter font files | `design/fonts/Inter-*.ttf`, `tools/editor/static/fonts/Inter-*.ttf` | SIL Open Font License 1.1; see [`LICENSES/Inter-OFL.txt`](LICENSES/Inter-OFL.txt) |
 | Source Serif 4 font files | `design/fonts/SourceSerif4-*.ttf` | SIL Open Font License 1.1; see [`LICENSES/SourceSerif4-OFL.txt`](LICENSES/SourceSerif4-OFL.txt) |
 | CodeMirror 5.65.21 | `tools/editor/static/vendor/codemirror-5.65.21/` | MIT; see [`LICENSES/codemirror-5.65.21-MIT.txt`](LICENSES/codemirror-5.65.21-MIT.txt) |
-| js-yaml 4.3.0 | `tools/editor/static/vendor/js-yaml-4.3.0/js-yaml.min.js` | MIT; see [`LICENSES/js-yaml-4.3.0-MIT.txt`](LICENSES/js-yaml-4.3.0-MIT.txt) |
+| js-yaml 4.3.2 | `tools/editor/static/vendor/js-yaml-4.3.2/js-yaml.min.js` | MIT; see [`LICENSES/js-yaml-4.3.2-MIT.txt`](LICENSES/js-yaml-4.3.2-MIT.txt) |
 | Paged.js 0.4.3 | `tools/editor/static/vendor/pagedjs-0.4.3/paged.polyfill.js` | MIT; see [`LICENSES/pagedjs-0.4.3-MIT.txt`](LICENSES/pagedjs-0.4.3-MIT.txt) and bundled dependency notices in [`LICENSES/pagedjs-0.4.3-bundled-dependencies.txt`](LICENSES/pagedjs-0.4.3-bundled-dependencies.txt) |
 | Supabase JavaScript client 2.110.0 | `tools/editor/static/vendor/supabase-js-2.110.0.js` | MIT; see [`tools/editor/static/vendor/supabase-js-2.110.0.LICENSE.txt`](tools/editor/static/vendor/supabase-js-2.110.0.LICENSE.txt) |
 | Lucide 1.26.0 icon geometry | `tools/editor/static/icons.js`, `engine/render/brand_icons.py` | ISC with Feather-derived icons under MIT; see [`LICENSES/lucide-1.26.0-ISC-and-Feather-MIT.txt`](LICENSES/lucide-1.26.0-ISC-and-Feather-MIT.txt) and [`LICENSES/icon-assets.lock.json`](LICENSES/icon-assets.lock.json) |
