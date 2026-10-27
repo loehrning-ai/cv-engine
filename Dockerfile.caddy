@@ -83,7 +83,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 
 # The runtime has no compiler or general-purpose HTTP client. Caddy is a static
 # binary; only the current CA bundle is added for ACME and upstream TLS.
-FROM cgr.dev/chainguard/wolfi-base@sha256:360896efb0753a5701c48f860e17130c205eae5a264797aa3e7ea126ee2923a7
+FROM cgr.dev/chainguard/wolfi-base@sha256:0feab531471d2edfcca55f18883441cb7df598e724fa2dedf9985273f532eed7
 
 LABEL org.opencontainers.image.title="CV Copilot Caddy proxy" \
       org.opencontainers.image.version="2.11.4" \
