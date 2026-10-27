@@ -7,11 +7,11 @@ import re
 ROOT = Path(__file__).resolve().parents[1]
 WOLFI = (
     "cgr.dev/chainguard/wolfi-base@sha256:"
-    "003627df3c1e1bba0c4116afcddb314aca9594ee2328c7e876a8081a6c988b2e"
+    "360896efb0753a5701c48f860e17130c205eae5a264797aa3e7ea126ee2923a7"
 )
 GO_BUILDER = (
-    "golang:1.26.5-alpine3.23@sha256:"
-    "622e56dbc11a8cfe87cafa2331e9a201877271cbff918af53d3be315f3da88cc"
+    "golang:1.26.10-alpine3.23@sha256:"
+    "0525c952defebc693cdaf62cdf43afa32be5a7f377e99260642ea19c240c708e"
 )
 TRIVY_IMAGE = (
     "aquasec/trivy:0.72.0@sha256:"
@@ -31,8 +31,8 @@ def test_application_image_uses_pinned_wolfi_python_and_renderer_stack():
     dockerfile = _read("Dockerfile")
 
     assert f"FROM {WOLFI}" in dockerfile
-    assert "python-3.13=3.13.14-r3" in dockerfile
-    assert "py3.13-pip=26.1.2-r1" in dockerfile
+    assert "python-3.13=3.13.16_git20261016-r2" in dockerfile
+    assert "py3.13-pip=26.2.2-r0" in dockerfile
     for package in (
         "cairo=1.18.4-r6",
         "pango=1.58.0-r2",
@@ -40,7 +40,7 @@ def test_application_image_uses_pinned_wolfi_python_and_renderer_stack():
         "harfbuzz=14.2.1-r2",
         "fontconfig=2.18.2-r0",
         "font-liberation=2.1.5-r5",
-        "ca-certificates=20260413-r0",
+        "ca-certificates=20260909-r3",
         "libffi=3.7.1-r0",
         "shared-mime-info=2.5.1-r0",
     ):
@@ -64,23 +64,32 @@ def test_caddy_is_source_built_with_pinned_go_caddy_and_grpc():
     assert f"FROM {GO_BUILDER} AS caddy-builder" in dockerfile
     assert dockerfile.count(f"FROM {WOLFI}") == 1
     assert "ARG CADDY_VERSION=v2.11.4" in dockerfile
-    assert "ARG GRPC_VERSION=v1.82.1" in dockerfile
+    assert "ARG GRPC_VERSION=v1.83.2" in dockerfile
     # Caddy v2.11.4 pulls golang.org/x/text v0.37.0 (CVE-2026-56852, HIGH).
     # Go resolves to the highest required version, so the explicit require
     # lifts it. Without this the Trivy gate fails the release.
-    assert "ARG XTEXT_VERSION=v0.39.0" in dockerfile
+    assert "ARG XTEXT_VERSION=v0.42.0" in dockerfile
     assert '_ "github.com/caddyserver/caddy/v2/modules/standard"' in dockerfile
     assert '-require="github.com/caddyserver/caddy/v2@${CADDY_VERSION}"' in dockerfile
     assert '-require="google.golang.org/grpc@${GRPC_VERSION}"' in dockerfile
     assert '-require="golang.org/x/text@${XTEXT_VERSION}"' in dockerfile
     assert 'grep -Fqx "golang.org/x/text ${XTEXT_VERSION}"' in dockerfile
+    for arg, module in (
+        ("XCRYPTO_VERSION=v0.57.0", "golang.org/x/crypto"),
+        ("XNET_VERSION=v0.60.0", "golang.org/x/net"),
+        ("COMPRESS_VERSION=v1.18.7", "github.com/klauspost/compress"),
+    ):
+        name = arg.split("=", 1)[0]
+        assert f"ARG {arg}" in dockerfile
+        assert f'-require="{module}@${{{name}}}"' in dockerfile
+        assert f'grep -Fqx "{module} ${{{name}}}"' in dockerfile
     assert "go version -m /tmp/caddy" in dockerfile
     assert "caddy-build-modules.txt" in dockerfile
     assert "caddy-build-info.txt" in dockerfile
     assert "USER nonroot:nonroot" in dockerfile
     assert "XDG_CONFIG_HOME=/config" in dockerfile
     assert "XDG_DATA_HOME=/data" in dockerfile
-    assert "ca-certificates=20260413-r0" in dockerfile
+    assert "ca-certificates=20260909-r3" in dockerfile
     assert "curl" not in dockerfile.lower()
 
 
@@ -159,9 +168,9 @@ def test_ci_and_deploy_fail_closed_on_container_cves_and_retain_reports():
     for path in (".github/workflows/ci.yml", ".github/workflows/deploy.yml"):
         workflow = _read(path)
         assert "docker compose --profile prod build --pull app caddy" in workflow
-        assert "Python 3.13.14" in workflow
+        assert "Python 3.13.16" in workflow
         assert "github.com/caddyserver/caddy/v2 v2.11.4" in workflow
-        assert "google.golang.org/grpc v1.82.1" in workflow
+        assert "google.golang.org/grpc v1.83.2" in workflow
         assert "docker/scout-action@" not in workflow
         assert workflow.count("bash tools/ci/scan_container_images.sh") == 1
         assert "container-cve-reports-${{ github.sha }}" in workflow
